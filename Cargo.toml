@@ -1,0 +1,38 @@
+[package]
+name = "huragok"
+version = "0.1.0"
+edition = "2021"
+description = "Gameplay customization engine embedded directly into Halo: Campaign Evolved"
+license = "MIT"
+repository = "https://github.com/dend/huragok"
+
+[lib]
+# cdylib -> a normal Windows DLL loaded by the dwmapi proxy from mods\.
+name = "huragok"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",                    # SECURITY_ATTRIBUTES (CreateThread)
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_Console",
+    "Win32_System_IO",                   # OVERLAPPED (WriteFile)
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",      # GetCursorPos / SetCursorPos / GetSystemMetrics
+] }
+
+[build-dependencies]
+# Compiles the tiny SEH (__try/__except) shim in csrc/ so we can fault-guard
+# risky reflected calls the same way the C++ engine did.
+cc = "1.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"     # never unwind across the FFI / DllMain boundary
+strip = true
