@@ -1,14 +1,15 @@
 //! Native ImGui control panel. The plugin dispatches FImGuiDemo::DrawControls each
 //! frame through a .rdata function pointer while the live ImGui context is current.
-//! We swap that pointer to our own draw callback, render our panel with the native
-//! ImGui entry points, then tail-call the original.
+//! We swap that pointer to our own draw callback, render our panel, then tail-call
+//! the original.
 //!
-//! Only the verified-safe entry points are used here (Begin/End/Text/Button/
-//! TreeNodeBehavior). Richer widgets (Checkbox/Slider/ProgressBar) are added one at
-//! a time after their ABI is confirmed, because a wrong ABI corrupts ImGui state.
+//! Every non-trivial widget call is wrapped in `guarded(label, ...)`: a fault is
+//! caught (so it can never unbalance the ImGui window stack and hang the game) and
+//! logged once with its label, so a wrong RVA/ABI is diagnosable from the log.
 
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use crate::cmd::{push, Cmd};
 use crate::mem::{base, patch_ptr};
@@ -30,13 +31,40 @@ type ButtonFn = unsafe extern "system" fn(*const c_char, *const ImVec2) -> bool;
 type TreeFn = unsafe extern "system" fn(u32, i32, *const c_char, *const c_char) -> bool;
 type ProgressFn = unsafe extern "system" fn(f32, *const ImVec2, *const c_char);
 type CheckboxFn = unsafe extern "system" fn(*const c_char, *mut bool) -> bool;
-type SliderFn =
-    unsafe extern "system" fn(*const c_char, *mut f32, f32, f32, *const c_char, i32) -> bool;
+// 0x73191f0 is really ImGui::SliderScalar: (label, data_type, p_data, p_min, p_max, fmt, flags).
+// data_type 8 = ImGuiDataType_Float; min/max are pointers to the pointee type (f32 here).
+type SliderFn = unsafe extern "system" fn(
+    *const c_char,
+    i32,
+    *mut c_void,
+    *const c_void,
+    *const c_void,
+    *const c_char,
+    i32,
+) -> bool;
+const IMGUI_DATATYPE_FLOAT: i32 = 8;
+type InvisibleFn = unsafe extern "system" fn(*const c_char, *const ImVec2, i32) -> bool;
+type AddLineFn = unsafe extern "system" fn(*mut u8, *const ImVec2, *const ImVec2, u32, f32);
+type AddRectFn = unsafe extern "system" fn(*mut u8, *const ImVec2, *const ImVec2, u32, f32, i32);
+type AddCircleFn = unsafe extern "system" fn(*mut u8, *const ImVec2, f32, u32, i32);
 
 static ORIG_DEMO: AtomicUsize = AtomicUsize::new(0);
 static HOOKED: AtomicBool = AtomicBool::new(false);
 static PANEL: AtomicBool = AtomicBool::new(false);
-static FAULTED: AtomicBool = AtomicBool::new(false);
+static FAULTED_WIDGETS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// Run a widget call under SEH. On fault, skip it and log the label once.
+fn guarded(label: &'static str, f: impl FnMut()) {
+    if crate::seh::guard(f) {
+        return;
+    }
+    if let Ok(mut v) = FAULTED_WIDGETS.lock() {
+        if !v.contains(&label) {
+            v.push(label);
+            crate::rep!("[panel] widget '{label}' faulted (guarded); skipping it");
+        }
+    }
+}
 
 /// Swap the DrawControls dispatch pointer to our draw callback.
 pub fn install() {
@@ -73,16 +101,14 @@ pub fn toggle() {
 
 unsafe extern "system" fn demo_hook(self_: *mut c_void) {
     if PANEL.load(Ordering::Relaxed) {
-        let ok = crate::seh::guard(|| unsafe { draw_panel() });
-        if !ok && !FAULTED.swap(true, Ordering::Relaxed) {
-            crate::rep!("[panel] draw faulted (guarded)");
-        }
+        // Backstop guard around the whole draw, on top of the per-widget guards.
+        guarded("panel", || unsafe { draw_panel() });
     }
     let orig: DemoFn = core::mem::transmute(ORIG_DEMO.load(Ordering::Relaxed));
     orig(self_);
 }
 
-#[allow(unused_assignments)] // the per-header id counter's final bump is intentional
+#[allow(unused_assignments)]
 unsafe fn draw_panel() {
     let begin: BeginFn = core::mem::transmute(base() + IMGUI_BEGIN);
     let end: EndFn = core::mem::transmute(base() + IMGUI_END);
@@ -93,7 +119,6 @@ unsafe fn draw_panel() {
     let checkbox: CheckboxFn = core::mem::transmute(base() + IMGUI_CHECKBOX);
     let slider: SliderFn = core::mem::transmute(base() + IMGUI_SLIDER_FLOAT);
 
-    // Full width, auto height -> uniform buttons.
     static FULL: ImVec2 = ImVec2 { x: -1.0, y: 0.0 };
     const OPEN: i32 = 0x20;
     let mut hid: u32 = 0xC0DE_0001;
@@ -128,17 +153,16 @@ unsafe fn draw_panel() {
         return;
     }
 
+    // ---- Stats ----
     if header!(b"Stats\0", OPEN) {
         let (h, s, alive, total, valid) = crate::stats::snapshot();
         if valid {
-            // ProgressBars, each guarded so a wrong ABI skips itself instead of
-            // aborting the draw before End() (which would unbalance the window stack).
             let hp = std::ffi::CString::new(format!("Health {h:.0}%")).unwrap_or_default();
             let hf = if h.is_finite() { (h / 100.0).clamp(0.0, 1.0) } else { 0.0 };
-            crate::seh::guard(|| progress(hf, &FULL, hp.as_ptr()));
+            guarded("health bar", || progress(hf, &FULL, hp.as_ptr()));
             let sp = std::ffi::CString::new(format!("Shield {s:.0}%")).unwrap_or_default();
             let sf = if s.is_finite() { (s / 100.0).clamp(0.0, 1.0) } else { 0.0 };
-            crate::seh::guard(|| progress(sf, &FULL, sp.as_ptr()));
+            guarded("shield bar", || progress(sf, &FULL, sp.as_ptr()));
             if total < 0 {
                 label!(b"Enemies  counting...\0");
             } else {
@@ -149,11 +173,13 @@ unsafe fn draw_panel() {
         }
     }
 
+    // ---- Machinima ----
     if header!(b"Machinima\0", OPEN) {
-        // Free-cam checkbox (each widget guarded so a bad ABI skips itself).
         let mut fc = cam().freecam;
         let mut ch = false;
-        crate::seh::guard(|| ch = checkbox(b"Free-cam\0".as_ptr() as *const c_char, &mut fc));
+        guarded("free-cam checkbox", || {
+            ch = checkbox(b"Free-cam\0".as_ptr() as *const c_char, &mut fc)
+        });
         if ch {
             let mut c = cam();
             c.freecam = fc;
@@ -165,18 +191,22 @@ unsafe fn draw_panel() {
         }
         let mut mo = cam().mouse;
         let mut ch = false;
-        crate::seh::guard(|| ch = checkbox(b"Mouse-look\0".as_ptr() as *const c_char, &mut mo));
+        guarded("mouse checkbox", || {
+            ch = checkbox(b"Mouse-look\0".as_ptr() as *const c_char, &mut mo)
+        });
         if ch {
             cam().mouse = mo;
         }
         let mut fov = cam().fov;
+        let (fmin, fmax) = (20.0f32, 140.0f32);
         let mut ch = false;
-        crate::seh::guard(|| {
+        guarded("fov slider", || {
             ch = slider(
                 b"FOV\0".as_ptr() as *const c_char,
-                &mut fov,
-                20.0,
-                140.0,
+                IMGUI_DATATYPE_FLOAT,
+                &mut fov as *mut f32 as *mut c_void,
+                &fmin as *const f32 as *const c_void,
+                &fmax as *const f32 as *const c_void,
                 b"%.0f\0".as_ptr() as *const c_char,
                 0,
             )
@@ -187,19 +217,24 @@ unsafe fn draw_panel() {
             c.fov_locked = true;
         }
         let mut td = crate::pawn::time_dilation();
+        let (tmin, tmax) = (0.05f32, 4.0f32);
         let mut ch = false;
-        crate::seh::guard(|| {
+        guarded("time slider", || {
             ch = slider(
                 b"Time\0".as_ptr() as *const c_char,
-                &mut td,
-                0.05,
-                4.0,
+                IMGUI_DATATYPE_FLOAT,
+                &mut td as *mut f32 as *mut c_void,
+                &tmin as *const f32 as *const c_void,
+                &tmax as *const f32 as *const c_void,
                 b"%.2f\0".as_ptr() as *const c_char,
                 0,
             )
         });
         if ch {
             push(Cmd::Slomo(td));
+        }
+        if btn!(b"Time reset (1x)\0") {
+            push(Cmd::Slomo(1.0));
         }
         if btn!(b"FOV reset\0") {
             let mut c = cam();
@@ -215,17 +250,38 @@ unsafe fn draw_panel() {
         if btn!(b"Pause toggle\0") {
             push(Cmd::Pause);
         }
+        if btn!(b"Freeze sim (Blam)\0") {
+            push(Cmd::SimFreeze);
+        }
+        if btn!(b"Resume sim (Blam)\0") {
+            push(Cmd::SimUnfreeze);
+        }
+        if btn!(b"Diag: time timer\0") {
+            push(Cmd::DiagTime);
+        }
+    }
+
+    // ---- Timeline ----
+    if header!(b"Timeline\0", OPEN) {
+        guarded("timeline", || unsafe { draw_timeline() });
+        let (count, _ph, playing) = crate::paths::timeline();
+        line!(
+            "{} keyframes   {}",
+            count,
+            if playing { "playing" } else { "stopped" }
+        );
         if btn!(b"Add Keyframe\0") {
             crate::paths::add();
         }
-        if btn!(b"Play / Stop Path\0") {
+        if btn!(b"Play / Stop\0") {
             crate::paths::toggle_play();
         }
-        if btn!(b"Clear Path\0") {
+        if btn!(b"Clear\0") {
             crate::paths::clear();
         }
     }
 
+    // ---- Character / Pawn ----
     if header!(b"Character / Pawn\0", 0) {
         if btn!(b"Hide body\0") {
             push(Cmd::PawnHide);
@@ -251,8 +307,15 @@ unsafe fn draw_panel() {
         if btn!(b"Teleport to camera\0") {
             push(Cmd::Teleport);
         }
+        if btn!(b"Show full body\0") {
+            push(Cmd::FullbodyOn);
+        }
+        if btn!(b"Hide body (first-person)\0") {
+            push(Cmd::FullbodyOff);
+        }
     }
 
+    // ---- Pawn FX ----
     if header!(b"Pawn FX\0", 0) {
         if btn!(b"Active Camo ON\0") {
             push(Cmd::CamoOn);
@@ -292,6 +355,7 @@ unsafe fn draw_panel() {
         }
     }
 
+    // ---- UI ----
     if header!(b"UI\0", 0) {
         if btn!(b"Toggle ImGui Input (cursor)\0") {
             push(Cmd::ImguiInput);
@@ -299,4 +363,55 @@ unsafe fn draw_panel() {
     }
 
     end();
+}
+
+/// Draw the keyframe track: a bar, a dot per keyframe, and the playhead line.
+/// Uses the window draw list (resolved through inlined ImGui offsets).
+unsafe fn draw_timeline() {
+    let inv: InvisibleFn = core::mem::transmute(base() + IMGUI_INVISIBLE_BUTTON);
+    let add_rect: AddRectFn = core::mem::transmute(base() + IMGUI_DRAW_ADD_RECT_FILLED);
+    let add_line: AddLineFn = core::mem::transmute(base() + IMGUI_DRAW_ADD_LINE);
+    let add_circle: AddCircleFn = core::mem::transmute(base() + IMGUI_DRAW_ADD_CIRCLE_FILLED);
+
+    let g = *((base() + GIMGUI_PTR) as *const usize);
+    if g == 0 {
+        return;
+    }
+    let win = *((g + IMGUI_CTX_CURRENT_WINDOW) as *const usize);
+    if win == 0 {
+        return;
+    }
+    let dl = *((win + IMGUI_WIN_DRAWLIST) as *const usize) as *mut u8;
+    if dl.is_null() {
+        return;
+    }
+
+    // Reserve the track area so following widgets do not overlap it.
+    let origin = *((win + IMGUI_WIN_CURSOR_POS) as *const ImVec2);
+    let size = ImVec2 { x: 320.0, y: 46.0 };
+    inv(b"##timeline\0".as_ptr() as *const c_char, &size, 0);
+
+    let x0 = origin.x + 4.0;
+    let y0 = origin.y + 6.0;
+    let w = size.x - 8.0;
+    let h = 32.0;
+
+    // Colours are 0xAABBGGRR.
+    add_rect(dl, &ImVec2 { x: x0, y: y0 }, &ImVec2 { x: x0 + w, y: y0 + h }, 0xff2a_2a2a, 4.0, 0);
+
+    let (count, playhead, _playing) = crate::paths::timeline();
+    let cy = y0 + h * 0.5;
+    for i in 0..count {
+        let f = if count > 1 {
+            i as f32 / (count - 1) as f32
+        } else {
+            0.0
+        };
+        let cx = x0 + f * w;
+        add_circle(dl, &ImVec2 { x: cx, y: cy }, 5.0, 0xff50_c8ff, 12);
+    }
+    if count >= 1 {
+        let px = x0 + playhead as f32 * w;
+        add_line(dl, &ImVec2 { x: px, y: y0 }, &ImVec2 { x: px, y: y0 + h }, 0xff50_50ff, 2.0);
+    }
 }

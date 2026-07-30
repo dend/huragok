@@ -16,6 +16,7 @@ static PC: AtomicUsize = AtomicUsize::new(0);
 static TD: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0f32 bits
 static FULLBODY: AtomicBool = AtomicBool::new(false);
 static SCALE: AtomicU64 = AtomicU64::new(0); // f64 bits; 0.0 = do not force
+static TIME_APPLIED: AtomicBool = AtomicBool::new(false); // log the sim-clock reach once
 
 pub fn set_pc(p: *mut u8) {
     PC.store(p as usize, Ordering::Relaxed);
@@ -254,28 +255,30 @@ pub fn execute(pc: *mut u8, c: Cmd) {
                 }
                 pawn_fx(pawn, c);
             }
-            Cmd::FullbodyOn | Cmd::FullbodyOff => {
-                // Disabled: the world-rep offsets (pawn+0x3F8 etc.) shifted on this build,
-                // so driving the updater hangs the game. Needs re-derivation before re-enabling.
-                FULLBODY.store(false, Ordering::Relaxed);
-                crate::rep!("[fullbody] disabled on this build (offsets shifted, needs re-RE)");
-            }
+            Cmd::FullbodyOn => try_third_person(pc, true),
+            Cmd::FullbodyOff => try_third_person(pc, false),
             Cmd::ImguiInput => imgui_toggle_input(pc),
             Cmd::Slomo(v) => {
                 set_time_dilation(v);
-                let gs = crate::ue::reflect::find_class("GameplayStatics");
-                let f = if gs.is_null() {
-                    core::ptr::null_mut()
-                } else {
-                    find_function(gs, "SetGlobalTimeDilation")
-                };
-                if f.is_null() {
-                    crate::rep!("[time] SetGlobalTimeDilation NOT found (gs={:p}) - not applied", gs);
-                } else {
-                    apply_time(pc);
-                    crate::rep!("[time] SetGlobalTimeDilation({:.2}) called; if no slow-mo the game ignores UE time dilation", v);
+                // Drive the real Blam sim clock: game_speed in game_time_globals (the sim
+                // runs in HaloSimulation_tag_release.dll on its own clock). Resolve via the
+                // throttled thread walk here (command path); the per-frame hold_time then
+                // re-asserts it every frame.
+                crate::simtime::ensure();
+                let landed = crate::simtime::apply(v);
+                if !TIME_APPLIED.swap(true, Ordering::Relaxed) {
+                    match crate::simtime::read() {
+                        Some((tr, tl, gs)) => crate::rep!(
+                            "[time] sim clock {}: tick_rate={} tick_length={:.5} game_speed now {:.2} (scale {:.2})",
+                            if landed { "reached" } else { "NOT reached" }, tr, tl, gs, v
+                        ),
+                        None => crate::rep!("[time] sim clock not resolved yet"),
+                    }
                 }
             }
+            Cmd::SimFreeze => blam_pause(pc, true),
+            Cmd::SimUnfreeze => blam_pause(pc, false),
+            Cmd::DiagTime => diag_time(pc),
             Cmd::FadeOut => camera_fade(true),
             Cmd::FadeIn => camera_fade(false),
         }
@@ -365,6 +368,103 @@ fn pawn_fx(pawn: *mut u8, c: Cmd) {
     }
 }
 
+/// Third-person body, surgically. The pawn owns EIGHT skeletal meshes: first-person
+/// arm meshes (`BPC_FP_*`), a first-person shadow proxy, translucent camo overlays,
+/// and the real third-person body meshes (`BPC_PAWN_SkeletalMesh_C`, `BPC_SkeletalMesh_C`,
+/// `Body`). The clean approach is to flip ONLY `bOwnerNoSee` and touch NOTHING else:
+///   - non-FP body meshes -> bOwnerNoSee=false so your own camera sees the body;
+///   - FP meshes          -> bOwnerNoSee=true  so the first-person arms/shadow do not
+///     float alongside as the "duplicate".
+/// We do NOT force SetVisibility/SetHiddenInGame anymore: that was revealing the shadow
+/// and translucent proxy meshes as the wireframe cages / ghost overlay. Each mesh keeps
+/// its game-managed visibility (translucent stays hidden unless camo is active, etc.).
+pub fn try_third_person(pc: *mut u8, on: bool) {
+    let ran = crate::seh::guard(|| unsafe {
+        let pawn = get_pawn(pc);
+        if pawn.is_null() {
+            crate::rep!("[tp] no pawn");
+            return;
+        }
+        let actor = call_ret_ptr(pawn, "GetBlamObjectActor");
+        crate::rep!("[tp] pawn={:p} actor={:p} show={}", pawn, actor, on);
+
+        // Helpers: bOwnerNoSee, and a combined visibility set for the mesh ITSELF only.
+        // bPropagateToChildren is 0 on purpose: propagating un-hides child components
+        // (the weapon and its collision proxy attached to a hand socket), which rendered
+        // as wireframe cages. We only want the body mesh visible, not its attachments.
+        let set_owner_no_see = |o: *mut u8, no_see: bool| {
+            let mut b = no_see as u8;
+            pe_call(o, "SetOwnerNoSee", &mut b as *mut u8 as *mut c_void, 1);
+        };
+        let set_visible = |o: *mut u8, visible: bool| {
+            let mut vis = [visible as u8, 0u8];
+            pe_call(o, "SetVisibility", vis.as_mut_ptr() as *mut c_void, 2);
+            let mut hidden = [(!visible) as u8, 0u8];
+            pe_call(o, "SetHiddenInGame", hidden.as_mut_ptr() as *mut c_void, 2);
+        };
+
+        let n = crate::ue::object::num_elements();
+        let mut toggled = 0;
+        for i in 0..n {
+            let o = crate::ue::object::object_at(i);
+            if o.is_null() {
+                continue;
+            }
+            // Owned by the pawn/actor within a few Outer hops. Walking the chain (not just
+            // direct ownership) catches sub-meshes like the head, whose Outer is the body
+            // mesh (head -> body mesh -> pawn). The weapon's collision proxy is owned by a
+            // separate weapon actor, so its chain never reaches the pawn - it stays
+            // untouched, which is why we can show the head without the weapon wireframe.
+            let mut owner = *((o as usize + crate::offsets::UO_OUTER) as *const *mut u8);
+            let mut owned = false;
+            for _ in 0..5 {
+                if owner.is_null() {
+                    break;
+                }
+                if owner == pawn || owner == actor {
+                    owned = true;
+                    break;
+                }
+                owner = *((owner as usize + crate::offsets::UO_OUTER) as *const *mut u8);
+            }
+            if !owned {
+                continue;
+            }
+            let name = crate::ue::fname::obj_name(o);
+            let cn = crate::ue::fname::obj_name(class_of(o));
+            if !cn.contains("SkeletalMesh") && !name.contains("SkeletalMesh") {
+                continue;
+            }
+            // Proxy meshes we must NOT show in third person: first-person arms (`FP`),
+            // the shadow-only proxy (`Shadow`), and the camo/ghost overlay (`Translucent`).
+            // Everything else (`BPC_PAWN_SkeletalMesh_C`, `BPC_SkeletalMesh_C`, `Body`) is
+            // the real third-person body.
+            let is_proxy =
+                name.contains("FP") || name.contains("Shadow") || name.contains("Translucent");
+            let is_fp = name.contains("FP");
+            if on {
+                if is_proxy {
+                    set_visible(o, false); // hide arms / shadow / ghost overlay
+                } else {
+                    set_owner_no_see(o, false); // real body: let the owner camera see it
+                    set_visible(o, true);
+                }
+            } else if is_fp {
+                set_owner_no_see(o, false); // restore first-person arms
+                set_visible(o, true);
+            } else if !is_proxy {
+                set_owner_no_see(o, true); // hide the third-person body from owner again
+            }
+            crate::rep!("[tp] {} proxy={} show={}", name, is_proxy, on);
+            toggled += 1;
+        }
+        crate::rep!("[tp] {toggled} skeletal mesh(es) adjusted show={on}");
+    });
+    if !ran {
+        crate::rep!("[tp] faulted");
+    }
+}
+
 /// Activate or restore the third-person world-representation body. SEH-guarded.
 pub fn show_full_body(pc: *mut u8, on: bool) {
     let pawn = unsafe { get_pawn(pc) };
@@ -409,6 +509,17 @@ pub fn show_full_body(pc: *mut u8, on: bool) {
     crate::rep!("[fullbody] {} {}", if on { "ON" } else { "OFF" }, if ok { "done" } else { "faulted" });
 }
 
+/// Re-assert the Blam sim time scale every frame. The sim rewrites `tick_length` each
+/// tick, so a one-shot write does not stick; we re-apply the current scale (and, once the
+/// user returns to 1.0, keep writing the normal value so it restores cleanly). No-op until
+/// the Time slider has been touched at least once.
+pub fn hold_time() {
+    if !TIME_APPLIED.load(Ordering::Relaxed) {
+        return;
+    }
+    crate::simtime::apply(time_dilation());
+}
+
 /// Re-assert third-person body and forced scale every frame (pawn tick resets them).
 /// Called from the camera detour, which runs after the pawn tick.
 pub fn hold_pawn_state() {
@@ -450,6 +561,48 @@ pub fn hold_pawn_state() {
             }
         }
     });
+}
+
+/// Freeze/resume the Blam simulation itself via `SetGameAndBlamPaused`. Unlike UE's
+/// `Pause`, this reaches the Blam sim's own pause state (the sim runs on a separate
+/// clock). With the free-cam flying, this is a true freeze-frame for machinima.
+/// ParmsSize 9: an 8-byte param at offset 0 (zeroed = null / FName None) + bool at 8.
+fn blam_pause(pc: *mut u8, on: bool) {
+    let ran = crate::seh::guard(|| {
+        let mut b = [0u8; 16];
+        b[8] = on as u8;
+        if pe_call(pc, "SetGameAndBlamPaused", b.as_mut_ptr() as *mut c_void, 9) {
+            crate::rep!("[sim] SetGameAndBlamPaused({on}) called");
+        }
+    });
+    if !ran {
+        crate::rep!("[sim] blam pause faulted");
+    }
+}
+
+/// Diagnostic: resolve the Blam sim's `game_time_globals` (via the cross-thread TLS
+/// walk in `simtime`) and dump its head so we can (a) confirm resolution and (b) spot the
+/// `game_speed` field (a float that reads 1.0 at normal speed).
+fn diag_time(_pc: *mut u8) {
+    let ran = crate::seh::guard(|| unsafe {
+        crate::rep!("[diag] HaloSimulation base = 0x{:x}", crate::mem::sim_base());
+        let t = crate::simtime::resolve_now();
+        if t == 0 {
+            crate::rep!("[diag] game_time_globals NOT found on any thread");
+            return;
+        }
+        let tick_rate = *((t + crate::simtime::GTG_TICK_RATE) as *const i16);
+        let tick_len = *((t + crate::simtime::GTG_TICK_LENGTH) as *const f32);
+        crate::rep!("[diag] game_time @ 0x{:x} tick_rate={} tick_length={:.5}", t, tick_rate, tick_len);
+        for off in (0x00usize..0x48).step_by(4) {
+            let iv = *((t + off) as *const i32);
+            let fv = *((t + off) as *const f32);
+            crate::rep!("[diag] T+0x{:02x}: i32={:>11} f32={:.5}", off, iv, fv);
+        }
+    });
+    if !ran {
+        crate::rep!("[diag] faulted");
+    }
 }
 
 /// UGameplayStatics::SetGlobalTimeDilation with the current TD value. `world` is any

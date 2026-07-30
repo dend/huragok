@@ -47,6 +47,12 @@ pub fn count() -> usize {
     lock().kf.len()
 }
 
+/// (keyframe count, playhead 0..1, playing) for the timeline widget.
+pub fn timeline() -> (usize, f64, bool) {
+    let p = lock();
+    (p.kf.len(), p.t, p.playing)
+}
+
 /// Capture the current camera POV as a keyframe (max 32).
 pub fn add() {
     let s = cam();

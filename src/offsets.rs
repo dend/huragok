@@ -29,6 +29,15 @@ pub const IMGUI_CHECKBOX: usize = 0x0731_3050; // Checkbox(label, bool*) -> bool
 pub const IMGUI_SLIDER_FLOAT: usize = 0x0731_91f0; // SliderFloat(label, f32*, min, max, fmt, flags) -> bool
 pub const IMGUI_PROGRESS_BAR: usize = 0x0731_3ad0; // ProgressBar(fraction, ImVec2*, overlay)
 pub const IMGUI_SEPARATOR: usize = 0x0732_95d0; // Separator()
+pub const IMGUI_INVISIBLE_BUTTON: usize = 0x0731_1ae0; // InvisibleButton(id, ImVec2*, flags) -> bool
+pub const IMGUI_DRAW_ADD_LINE: usize = 0x0730_79e0; // ImDrawList::AddLine(this, p1*, p2*, col, thick)
+pub const IMGUI_DRAW_ADD_RECT_FILLED: usize = 0x0730_7c20; // AddRectFilled(this, min*, max*, col, round, flags)
+pub const IMGUI_DRAW_ADD_CIRCLE_FILLED: usize = 0x0730_8180; // AddCircleFilled(this, center*, r, col, segs)
+// Inlined ImGui accessors (no exported fn): resolve via these offsets.
+pub const GIMGUI_PTR: usize = 0x0d56_a008; // *ImGuiContext global (verified via RIP-relative loads)
+pub const IMGUI_CTX_CURRENT_WINDOW: usize = 0x3ed8; // ImGuiContext.CurrentWindow
+pub const IMGUI_WIN_DRAWLIST: usize = 0x0298; // ImGuiWindow.DrawList
+pub const IMGUI_WIN_CURSOR_POS: usize = 0x0100; // ImGuiWindow.DC.CursorPos (screen)
 pub const DRAWCONTROLS: usize = 0x0739_d270; // FImGuiDemo::DrawControls (per-frame draw cb)
 pub const DRAWCONTROLS_SLOT: usize = 0x0bf4_9950; // .rdata dispatch pointer we swap
 

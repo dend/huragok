@@ -139,13 +139,9 @@ fn cam_override(self_: *mut u8, func: *mut u8, parms: *mut c_void, orig: PeFn) {
             crate::rep!("[camhook] BlueprintUpdateCamera firing - override live.");
         }
 
-        // Per-frame holds, applied whether or not free-cam is on: keep time dilation
-        // and re-assert the third-person body / forced scale after the pawn tick.
-        if crate::pawn::time_dilation() != 1.0 {
-            IN_CAM.with(|c| c.set(true));
-            crate::pawn::apply_time(self_);
-            IN_CAM.with(|c| c.set(false));
-        }
+        // Per-frame holds: re-assert the Blam sim time scale (the sim rewrites tick_length
+        // each tick) and the third-person body / forced scale after the pawn tick.
+        crate::pawn::hold_time();
         crate::pawn::hold_pawn_state();
 
         let mut st = cam();

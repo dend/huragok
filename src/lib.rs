@@ -17,6 +17,7 @@ mod offsets;
 mod paths;
 mod pawn;
 mod seh;
+mod simtime;
 mod state;
 mod stats;
 mod ue;
@@ -78,6 +79,8 @@ unsafe extern "system" fn run(_param: *mut c_void) -> u32 {
         input::poll_freecam();
         input::poll_hotkeys();
         paths::update();
+        simtime::maintain(); // resolve + normalize the Blam sim clock once, clearing any
+                             // fast/slow tick_length the game restored from a prior session
         Sleep(15);
     }
 }

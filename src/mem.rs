@@ -9,6 +9,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
+static SIM_BASE: AtomicUsize = AtomicUsize::new(0);
 
 /// Resolve and cache the game module base. Call once, early.
 pub fn init() {
@@ -20,6 +21,25 @@ pub fn init() {
 #[inline]
 pub fn base() -> usize {
     BASE.load(Ordering::Relaxed)
+}
+
+/// Base address of `HaloSimulation_tag_release.dll` (the Blam sim), or 0 if not loaded.
+/// Cached after first successful resolve. The sim clock (`game_time_globals`) lives here.
+pub fn sim_base() -> usize {
+    let cached = SIM_BASE.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    // UTF-16, NUL-terminated: "HaloSimulation_tag_release.dll"
+    let name: Vec<u16> = "HaloSimulation_tag_release.dll"
+        .encode_utf16()
+        .chain(core::iter::once(0))
+        .collect();
+    let h = unsafe { GetModuleHandleW(name.as_ptr()) } as usize;
+    if h != 0 {
+        SIM_BASE.store(h, Ordering::Relaxed);
+    }
+    h
 }
 
 /// Absolute address of a module RVA.

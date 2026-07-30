@@ -47,6 +47,9 @@ pub enum Cmd {
     FullbodyOn,
     FullbodyOff,
     Slomo(f32),
+    SimFreeze,
+    SimUnfreeze,
+    DiagTime,
     FadeOut,
     FadeIn,
 }
