@@ -78,6 +78,35 @@ pub unsafe fn call_ret_f32(obj: *mut u8, fname: &str) -> f32 {
     *(buf.as_ptr() as *const f32)
 }
 
+/// Call a zero-arg UFunction on `obj` that returns a bool.
+pub unsafe fn call_ret_bool(obj: *mut u8, fname: &str) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    let f = find_function(class_of(obj), fname);
+    if f.is_null() {
+        return false;
+    }
+    let mut buf = [0u8; 32];
+    process_event(obj, f, buf.as_mut_ptr() as *mut c_void);
+    buf[0] != 0
+}
+
+/// Call a UFunction taking one actor pointer and returning a bool (e.g. team predicates).
+pub unsafe fn call_actor_ret_bool(obj: *mut u8, fname: &str, actor: *mut u8) -> bool {
+    if obj.is_null() {
+        return false;
+    }
+    let f = find_function(class_of(obj), fname);
+    if f.is_null() {
+        return false;
+    }
+    let mut buf = [0u8; 32];
+    *(buf.as_mut_ptr() as *mut *mut u8) = actor;
+    process_event(obj, f, buf.as_mut_ptr() as *mut c_void);
+    buf[8] != 0
+}
+
 /// AActor::GetComponentByClass(componentClass) -> component pointer.
 pub unsafe fn get_component(actor: *mut u8, comp_class: *mut u8) -> *mut u8 {
     if actor.is_null() || comp_class.is_null() {
@@ -225,13 +254,11 @@ pub fn execute(pc: *mut u8, c: Cmd) {
                 }
                 pawn_fx(pawn, c);
             }
-            Cmd::FullbodyOn => {
-                FULLBODY.store(true, Ordering::Relaxed);
-                show_full_body(pc, true);
-            }
-            Cmd::FullbodyOff => {
+            Cmd::FullbodyOn | Cmd::FullbodyOff => {
+                // Disabled: the world-rep offsets (pawn+0x3F8 etc.) shifted on this build,
+                // so driving the updater hangs the game. Needs re-derivation before re-enabling.
                 FULLBODY.store(false, Ordering::Relaxed);
-                show_full_body(pc, false);
+                crate::rep!("[fullbody] disabled on this build (offsets shifted, needs re-RE)");
             }
             Cmd::ImguiInput => imgui_toggle_input(pc),
             Cmd::Slomo(v) => {

@@ -3,7 +3,7 @@
 
 use core::cell::Cell;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::offsets::*;
 use crate::state::cam;
@@ -24,7 +24,6 @@ static ALIVE: AtomicBool = AtomicBool::new(false);
 static SAW_UPDATE: AtomicBool = AtomicBool::new(false);
 static FAULTED: AtomicBool = AtomicBool::new(false);
 static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-static FOV_LOG: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     static IN_CAM: Cell<bool> = const { Cell::new(false) };
@@ -153,20 +152,8 @@ fn cam_override(self_: *mut u8, func: *mut u8, parms: *mut c_void, orig: PeFn) {
         // Blam ignores the BlueprintUpdateCamera FOV out-param, so write the camera
         // manager's ViewTarget.POV.FOV (0x3B0) directly each frame.
         if st.freecam || st.fov_locked {
-            let addr = self_ as usize + CAMMGR_POV_FOV;
-            let before = *(addr as *const f32);
-            *(addr as *mut f32) = st.fov;
+            *((self_ as usize + CAMMGR_POV_FOV) as *mut f32) = st.fov;
             *((self_ as usize + CAMMGR_POV_DESIRED_FOV) as *mut f32) = st.fov;
-            let n = FOV_LOG.fetch_add(1, Ordering::Relaxed);
-            if n % 120 == 0 {
-                crate::rep!(
-                    "[fov] target={:.1} 0x3B0 before={:.1} after={:.1} self={:p}",
-                    st.fov,
-                    before,
-                    *(addr as *const f32),
-                    self_
-                );
-            }
         }
 
         if !st.freecam {

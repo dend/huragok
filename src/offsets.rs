@@ -25,6 +25,10 @@ pub const IMGUI_END: usize = 0x072c_52d0;
 pub const IMGUI_TEXT: usize = 0x0731_04c0;
 pub const IMGUI_BUTTON: usize = 0x0731_1a70; // Button(label, &size) -> ButtonEx
 pub const IMGUI_TREENODE: usize = 0x0732_5690; // TreeNodeBehavior(id, flags, label, label_end)
+pub const IMGUI_CHECKBOX: usize = 0x0731_3050; // Checkbox(label, bool*) -> bool
+pub const IMGUI_SLIDER_FLOAT: usize = 0x0731_91f0; // SliderFloat(label, f32*, min, max, fmt, flags) -> bool
+pub const IMGUI_PROGRESS_BAR: usize = 0x0731_3ad0; // ProgressBar(fraction, ImVec2*, overlay)
+pub const IMGUI_SEPARATOR: usize = 0x0732_95d0; // Separator()
 pub const DRAWCONTROLS: usize = 0x0739_d270; // FImGuiDemo::DrawControls (per-frame draw cb)
 pub const DRAWCONTROLS_SLOT: usize = 0x0bf4_9950; // .rdata dispatch pointer we swap
 
