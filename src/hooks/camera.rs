@@ -3,7 +3,7 @@
 
 use core::cell::Cell;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::offsets::*;
 use crate::state::cam;
@@ -24,6 +24,10 @@ static ALIVE: AtomicBool = AtomicBool::new(false);
 static SAW_UPDATE: AtomicBool = AtomicBool::new(false);
 static FAULTED: AtomicBool = AtomicBool::new(false);
 static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+// Lock-free FOV state for the GetFOVAngle detour, so it never touches the cam() Mutex
+// (which the detour already holds on the same thread -> would self-deadlock).
+static FORCED_FOV: AtomicU32 = AtomicU32::new(0x42b4_0000); // 90.0f32 bits
+static FOV_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static IN_CAM: Cell<bool> = const { Cell::new(false) };
@@ -98,12 +102,10 @@ pub fn install() {
 /// Read-time FOV override: return our FOV when free-cam or the lock is active,
 /// otherwise the game's real value.
 unsafe extern "system" fn get_fov_detour(this: *mut u8) -> f32 {
-    let (fc, lk, fov) = {
-        let s = cam();
-        (s.freecam, s.fov_locked, s.fov)
-    };
-    if fc || lk {
-        return fov;
+    // Lock-free read. Skip our value while we are seeding (IN_CAM) so the seed adopts
+    // the game's real FOV, and never lock cam() here (that would deadlock the detour).
+    if !IN_CAM.with(|c| c.get()) && FOV_ACTIVE.load(Ordering::Relaxed) {
+        return f32::from_bits(FORCED_FOV.load(Ordering::Relaxed));
     }
     let orig: GetFovFn = core::mem::transmute(ORIG_GETFOV.load(Ordering::Relaxed));
     orig(this)
@@ -151,7 +153,11 @@ fn cam_override(self_: *mut u8, func: *mut u8, parms: *mut c_void, orig: PeFn) {
         // Force POV.FOV: always in free-cam, otherwise only when the user locked it.
         // Blam ignores the BlueprintUpdateCamera FOV out-param, so write the camera
         // manager's ViewTarget.POV.FOV (0x3B0) directly each frame.
-        if st.freecam || st.fov_locked {
+        // Publish FOV to the lock-free atomics the GetFOVAngle detour reads.
+        let fov_active = st.freecam || st.fov_locked;
+        FOV_ACTIVE.store(fov_active, Ordering::Relaxed);
+        FORCED_FOV.store(st.fov.to_bits(), Ordering::Relaxed);
+        if fov_active {
             *((self_ as usize + CAMMGR_POV_FOV) as *mut f32) = st.fov;
             *((self_ as usize + CAMMGR_POV_DESIRED_FOV) as *mut f32) = st.fov;
         }

@@ -28,6 +28,7 @@ type EndFn = unsafe extern "system" fn();
 type TextFn = unsafe extern "system" fn(*const c_char, *const c_char);
 type ButtonFn = unsafe extern "system" fn(*const c_char, *const ImVec2) -> bool;
 type TreeFn = unsafe extern "system" fn(u32, i32, *const c_char, *const c_char) -> bool;
+type ProgressFn = unsafe extern "system" fn(f32, *const ImVec2, *const c_char);
 
 static ORIG_DEMO: AtomicUsize = AtomicUsize::new(0);
 static HOOKED: AtomicBool = AtomicBool::new(false);
@@ -85,6 +86,7 @@ unsafe fn draw_panel() {
     let text: TextFn = core::mem::transmute(base() + IMGUI_TEXT);
     let button: ButtonFn = core::mem::transmute(base() + IMGUI_BUTTON);
     let tree: TreeFn = core::mem::transmute(base() + IMGUI_TREENODE);
+    let progress: ProgressFn = core::mem::transmute(base() + IMGUI_PROGRESS_BAR);
 
     // Full width, auto height -> uniform buttons.
     static FULL: ImVec2 = ImVec2 { x: -1.0, y: 0.0 };
@@ -124,8 +126,14 @@ unsafe fn draw_panel() {
     if header!(b"Stats\0", OPEN) {
         let (h, s, alive, total, valid) = crate::stats::snapshot();
         if valid {
-            line!("Health   {h:.0}%");
-            line!("Shield   {s:.0}%");
+            // ProgressBars, each guarded so a wrong ABI skips itself instead of
+            // aborting the draw before End() (which would unbalance the window stack).
+            let hp = std::ffi::CString::new(format!("Health {h:.0}%")).unwrap_or_default();
+            let hf = if h.is_finite() { (h / 100.0).clamp(0.0, 1.0) } else { 0.0 };
+            crate::seh::guard(|| progress(hf, &FULL, hp.as_ptr()));
+            let sp = std::ffi::CString::new(format!("Shield {s:.0}%")).unwrap_or_default();
+            let sf = if s.is_finite() { (s / 100.0).clamp(0.0, 1.0) } else { 0.0 };
+            crate::seh::guard(|| progress(sf, &FULL, sp.as_ptr()));
             if total < 0 {
                 label!(b"Enemies  counting...\0");
             } else {
