@@ -37,7 +37,7 @@ pub fn fullbody() -> bool {
 }
 
 /// K2_GetPawn on a PlayerController.
-unsafe fn get_pawn(pc: *mut u8) -> *mut u8 {
+pub unsafe fn get_pawn(pc: *mut u8) -> *mut u8 {
     if pc.is_null() {
         return core::ptr::null_mut();
     }
@@ -48,6 +48,49 @@ unsafe fn get_pawn(pc: *mut u8) -> *mut u8 {
     let mut buf = [0usize; 1];
     process_event(pc, f, buf.as_mut_ptr() as *mut c_void);
     buf[0] as *mut u8
+}
+
+/// Call a zero-arg UFunction on `obj` that returns an object pointer.
+pub unsafe fn call_ret_ptr(obj: *mut u8, fname: &str) -> *mut u8 {
+    if obj.is_null() {
+        return core::ptr::null_mut();
+    }
+    let f = find_function(class_of(obj), fname);
+    if f.is_null() {
+        return core::ptr::null_mut();
+    }
+    let mut buf = [0u8; 32];
+    process_event(obj, f, buf.as_mut_ptr() as *mut c_void);
+    *(buf.as_ptr() as *const *mut u8)
+}
+
+/// Call a zero-arg UFunction on `obj` that returns an f32 (NaN if not found).
+pub unsafe fn call_ret_f32(obj: *mut u8, fname: &str) -> f32 {
+    if obj.is_null() {
+        return f32::NAN;
+    }
+    let f = find_function(class_of(obj), fname);
+    if f.is_null() {
+        return f32::NAN;
+    }
+    let mut buf = [0u8; 32];
+    process_event(obj, f, buf.as_mut_ptr() as *mut c_void);
+    *(buf.as_ptr() as *const f32)
+}
+
+/// AActor::GetComponentByClass(componentClass) -> component pointer.
+pub unsafe fn get_component(actor: *mut u8, comp_class: *mut u8) -> *mut u8 {
+    if actor.is_null() || comp_class.is_null() {
+        return core::ptr::null_mut();
+    }
+    let f = find_function(class_of(actor), "GetComponentByClass");
+    if f.is_null() {
+        return core::ptr::null_mut();
+    }
+    let mut buf = [0u8; 32];
+    *(buf.as_mut_ptr() as *mut *mut u8) = comp_class; // ComponentClass arg
+    process_event(actor, f, buf.as_mut_ptr() as *mut c_void);
+    *((buf.as_ptr() as usize + 8) as *const *mut u8) // return after the 8-byte arg
 }
 
 /// Run one command against the PlayerController `pc` (on the game thread).
@@ -193,8 +236,18 @@ pub fn execute(pc: *mut u8, c: Cmd) {
             Cmd::ImguiInput => imgui_toggle_input(pc),
             Cmd::Slomo(v) => {
                 set_time_dilation(v);
-                apply_time(pc);
-                crate::rep!("[time] dilation {:.2}", v);
+                let gs = crate::ue::reflect::find_class("GameplayStatics");
+                let f = if gs.is_null() {
+                    core::ptr::null_mut()
+                } else {
+                    find_function(gs, "SetGlobalTimeDilation")
+                };
+                if f.is_null() {
+                    crate::rep!("[time] SetGlobalTimeDilation NOT found (gs={:p}) - not applied", gs);
+                } else {
+                    apply_time(pc);
+                    crate::rep!("[time] SetGlobalTimeDilation({:.2}) called; if no slow-mo the game ignores UE time dilation", v);
+                }
             }
             Cmd::FadeOut => camera_fade(true),
             Cmd::FadeIn => camera_fade(false),

@@ -37,13 +37,23 @@ pub fn install(pc: *mut u8) {
     }
 }
 
+static STAT_TICK: AtomicUsize = AtomicUsize::new(0);
+
 unsafe extern "system" fn pc_detour(self_: *mut u8, func: *mut u8, parms: *mut c_void) {
-    if !IN_DRAIN.with(|d| d.get()) && crate::cmd::has_pending() {
-        IN_DRAIN.with(|d| d.set(true));
-        for c in crate::cmd::take_all() {
-            crate::pawn::execute(self_, c);
+    if !IN_DRAIN.with(|d| d.get()) {
+        if crate::cmd::has_pending() {
+            IN_DRAIN.with(|d| d.set(true));
+            for c in crate::cmd::take_all() {
+                crate::pawn::execute(self_, c);
+            }
+            IN_DRAIN.with(|d| d.set(false));
         }
-        IN_DRAIN.with(|d| d.set(false));
+        // Refresh live stats on the game thread, throttled (ProcessEvent fires often).
+        if STAT_TICK.fetch_add(1, Ordering::Relaxed) % 64 == 0 {
+            IN_DRAIN.with(|d| d.set(true));
+            crate::stats::refresh(self_);
+            IN_DRAIN.with(|d| d.set(false));
+        }
     }
     let orig: PeFn = core::mem::transmute(PC_PE.load(Ordering::Relaxed));
     orig(self_, func, parms);

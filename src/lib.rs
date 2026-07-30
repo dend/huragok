@@ -18,6 +18,7 @@ mod paths;
 mod pawn;
 mod seh;
 mod state;
+mod stats;
 mod ue;
 
 use core::ffi::c_void;

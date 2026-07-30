@@ -105,6 +105,23 @@ unsafe fn draw_panel() {
             text(b"%s\0".as_ptr() as *const c_char, status.as_ptr());
         }
 
+        if header!(b"Stats\0", OPEN) {
+            let (h, s, valid) = crate::stats::snapshot();
+            if valid {
+                if let Ok(t) = std::ffi::CString::new(format!("Health   {h:.0}%")) {
+                    text(b"%s\0".as_ptr() as *const c_char, t.as_ptr());
+                }
+                if let Ok(t) = std::ffi::CString::new(format!("Shield   {s:.0}%")) {
+                    text(b"%s\0".as_ptr() as *const c_char, t.as_ptr());
+                }
+            } else {
+                text(
+                    b"%s\0".as_ptr() as *const c_char,
+                    b"waiting for pawn...\0".as_ptr() as *const c_char,
+                );
+            }
+        }
+
         if header!(b"Machinima\0", OPEN) {
             if btn!(b"Free-cam toggle\0") {
                 let mut s = cam();
