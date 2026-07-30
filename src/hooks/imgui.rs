@@ -29,6 +29,9 @@ type TextFn = unsafe extern "system" fn(*const c_char, *const c_char);
 type ButtonFn = unsafe extern "system" fn(*const c_char, *const ImVec2) -> bool;
 type TreeFn = unsafe extern "system" fn(u32, i32, *const c_char, *const c_char) -> bool;
 type ProgressFn = unsafe extern "system" fn(f32, *const ImVec2, *const c_char);
+type CheckboxFn = unsafe extern "system" fn(*const c_char, *mut bool) -> bool;
+type SliderFn =
+    unsafe extern "system" fn(*const c_char, *mut f32, f32, f32, *const c_char, i32) -> bool;
 
 static ORIG_DEMO: AtomicUsize = AtomicUsize::new(0);
 static HOOKED: AtomicBool = AtomicBool::new(false);
@@ -87,6 +90,8 @@ unsafe fn draw_panel() {
     let button: ButtonFn = core::mem::transmute(base() + IMGUI_BUTTON);
     let tree: TreeFn = core::mem::transmute(base() + IMGUI_TREENODE);
     let progress: ProgressFn = core::mem::transmute(base() + IMGUI_PROGRESS_BAR);
+    let checkbox: CheckboxFn = core::mem::transmute(base() + IMGUI_CHECKBOX);
+    let slider: SliderFn = core::mem::transmute(base() + IMGUI_SLIDER_FLOAT);
 
     // Full width, auto height -> uniform buttons.
     static FULL: ImVec2 = ImVec2 { x: -1.0, y: 0.0 };
@@ -145,41 +150,56 @@ unsafe fn draw_panel() {
     }
 
     if header!(b"Machinima\0", OPEN) {
-        let (fc, mo, fov) = {
-            let c = cam();
-            (c.freecam, c.mouse, c.fov)
-        };
-        line!(
-            "cam {}   mouse {}   fov {:.0}   time {:.2}   kf {}",
-            if fc { "FREE" } else { "att" },
-            if mo { "ON" } else { "off" },
-            fov,
-            crate::pawn::time_dilation(),
-            crate::paths::count()
-        );
-        if btn!(b"Free-cam toggle\0") {
+        // Free-cam checkbox (each widget guarded so a bad ABI skips itself).
+        let mut fc = cam().freecam;
+        let mut ch = false;
+        crate::seh::guard(|| ch = checkbox(b"Free-cam\0".as_ptr() as *const c_char, &mut fc));
+        if ch {
             let mut c = cam();
-            c.freecam = !c.freecam;
-            if c.freecam {
+            c.freecam = fc;
+            if fc {
                 c.seed = true;
             }
-            let on = c.freecam;
             drop(c);
-            push(if on { Cmd::Freeze } else { Cmd::Unfreeze });
+            push(if fc { Cmd::Freeze } else { Cmd::Unfreeze });
         }
-        if btn!(b"Mouse-look toggle\0") {
-            let mut c = cam();
-            c.mouse = !c.mouse;
+        let mut mo = cam().mouse;
+        let mut ch = false;
+        crate::seh::guard(|| ch = checkbox(b"Mouse-look\0".as_ptr() as *const c_char, &mut mo));
+        if ch {
+            cam().mouse = mo;
         }
-        if btn!(b"FOV -\0") {
+        let mut fov = cam().fov;
+        let mut ch = false;
+        crate::seh::guard(|| {
+            ch = slider(
+                b"FOV\0".as_ptr() as *const c_char,
+                &mut fov,
+                20.0,
+                140.0,
+                b"%.0f\0".as_ptr() as *const c_char,
+                0,
+            )
+        });
+        if ch {
             let mut c = cam();
-            c.fov = (c.fov - 5.0).max(20.0);
+            c.fov = fov;
             c.fov_locked = true;
         }
-        if btn!(b"FOV +\0") {
-            let mut c = cam();
-            c.fov = (c.fov + 5.0).min(140.0);
-            c.fov_locked = true;
+        let mut td = crate::pawn::time_dilation();
+        let mut ch = false;
+        crate::seh::guard(|| {
+            ch = slider(
+                b"Time\0".as_ptr() as *const c_char,
+                &mut td,
+                0.05,
+                4.0,
+                b"%.2f\0".as_ptr() as *const c_char,
+                0,
+            )
+        });
+        if ch {
+            push(Cmd::Slomo(td));
         }
         if btn!(b"FOV reset\0") {
             let mut c = cam();
