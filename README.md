@@ -1,9 +1,8 @@
 # Huragok
 
-An in-process mod engine for Halo: Campaign Evolved (UE 5.5.4). It loads through a
-dwmapi proxy and adds a free-flying camera, a Dear ImGui control panel, keyframed
-camera paths, FOV and time-dilation control, and a set of single-player pawn tweaks
-(third-person body, scale, active camo, overshield, and more).
+A Dear ImGui control panel injected into Halo: Campaign Evolved (UE 5.5.4). It loads
+through a dwmapi proxy and puts single-player camera and gameplay controls behind an
+in-game panel: a free-flying camera, FOV, and a handful of pawn tweaks.
 
 Named after the Engineers from Halo, whose whole job is to take technology apart and
 put it back together.
