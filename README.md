@@ -8,6 +8,8 @@ camera paths, FOV and time-dilation control, and a set of single-player pawn twe
 Named after the Engineers from Halo, whose whole job is to take technology apart and
 put it back together.
 
+<img width="3838" height="2159" alt="ImGui" src="https://github.com/user-attachments/assets/bb489b69-0de9-4c1c-bef7-dd07f768f594" />
+
 ## How it loads
 
 ![How Huragok loads](docs/how-it-loads.svg)
