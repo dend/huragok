@@ -33,32 +33,32 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 # --- Presentation ---------------------------------------------------------
 $Glyph = @{
-    Check = [char]0x2713  # check mark
-    Cross = [char]0x2717  # cross
-    Arrow = [char]0x2192  # arrow
+    Bullet = [char]0x25CF  # filled circle
+    Check  = [char]0x2713  # check mark
+    Cross  = [char]0x2717  # cross
+    Arrow  = [char]0x2192  # arrow
 }
-$Rule = [string]([char]0x2500) * 54
 
 function Write-Header {
     Write-Host ''
-    Write-Host '  Huragok' -ForegroundColor Cyan -NoNewline
-    Write-Host '  Installer' -ForegroundColor DarkGray
-    Write-Host '  In-game gameplay toolbox and control panel' -ForegroundColor DarkGray
-    Write-Host "  $Rule" -ForegroundColor DarkGray
+    Write-Host '  ' -NoNewline
+    Write-Host $Glyph.Bullet -ForegroundColor Cyan -NoNewline
+    Write-Host ' Huragok' -ForegroundColor White
+    Write-Host '    In-game gameplay toolbox and control panel' -ForegroundColor DarkGray
     Write-Host ''
 }
 
 function Write-Task($Message) {
     Write-Host '  ' -NoNewline
     Write-Host $Glyph.Arrow -ForegroundColor Cyan -NoNewline
-    Write-Host "  $Message" -ForegroundColor Gray
+    Write-Host " $Message" -ForegroundColor Gray
 }
 
 function Write-Done($Label, $Detail) {
     Write-Host '  ' -NoNewline
     Write-Host $Glyph.Check -ForegroundColor Green -NoNewline
-    Write-Host '  ' -NoNewline
-    Write-Host $Label.PadRight(9) -ForegroundColor Gray -NoNewline
+    Write-Host ' ' -NoNewline
+    Write-Host $Label.PadRight(8) -ForegroundColor Gray -NoNewline
     Write-Host $Detail -ForegroundColor DarkGray
 }
 
@@ -66,7 +66,7 @@ function Write-Failure($Message) {
     Write-Host ''
     Write-Host '  ' -NoNewline
     Write-Host $Glyph.Cross -ForegroundColor Red -NoNewline
-    Write-Host "  $Message" -ForegroundColor Red
+    Write-Host " $Message" -ForegroundColor Red
     Write-Host ''
 }
 
@@ -152,10 +152,9 @@ try {
     Write-Done 'Mod' $modDest
 
     Write-Host ''
-    Write-Host "  $Rule" -ForegroundColor DarkGray
     Write-Host '  ' -NoNewline
     Write-Host $Glyph.Check -ForegroundColor Green -NoNewline
-    Write-Host '  Installation complete' -ForegroundColor Green
+    Write-Host ' Installation complete' -ForegroundColor Green
     Write-Host ''
     Write-Host '  Launch the game, load a mission, and press ' -ForegroundColor Gray -NoNewline
     Write-Host 'Ctrl+B' -ForegroundColor White -NoNewline

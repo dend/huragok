@@ -1,11 +1,21 @@
 <h1 align="center">Huragok</h1>
 
+<p align="center">In-game gameplay toolbox and control panel</p>
+
 <p align="center">
   <a href="https://github.com/dend/huragok/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/dend/huragok/build.yml?branch=main"></a>
   <a href="https://github.com/dend/huragok/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/dend/huragok?sort=semver"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/dend/huragok"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue">
 </p>
+
+> [!CAUTION]
+> **Use this at your own risk.** Huragok modifies the game while it runs. Halo: Campaign
+> Evolved is in early access. Halo Studios supports modding for the title (see the
+> [Early Access Primer](https://www.halowaypoint.com/news/early-access-primer)), but there
+> is no guarantee that this particular mod will always be considered acceptable, and that
+> stance could change in the future. Experiment for fun, and understand that you alone are
+> responsible for how you use it.
 
 Huragok is a single-player toolbox for Halo: Campaign Evolved. It adds a free-flying
 camera, an in-game control panel, skull toggles, time controls, and a keyframe system
@@ -44,6 +54,11 @@ the game's own files are left alone.
    ```powershell
    .\install.ps1 -GamePath "D:\Games\Halo Campaign Evolved"
    ```
+   > [!NOTE]
+   > The Microsoft Store and Xbox app (Game Pass) version is not supported out of the box.
+   > Its install layout and file protections differ, so the installer may not find or write
+   > to it. You can likely get the same result by placing the `huragok.dll` binary and the
+   > proxy into the game folders by hand, following the manual steps below.
 3. Start the game and load a mission. Press `INSERT` to detach the camera, or `Ctrl+B`
    to open the panel.
 
