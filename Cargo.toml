@@ -2,7 +2,7 @@
 name = "huragok"
 version = "0.1.0"
 edition = "2021"
-description = "Gameplay customization engine embedded directly into Halo: Campaign Evolved"
+description = "In-process gameplay customization engine and control panel"
 license = "MIT"
 repository = "https://github.com/dend/huragok"
 

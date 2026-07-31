@@ -34,7 +34,7 @@ pub fn snapshot() -> (String, String, i32, i32) {
     }
 }
 
-/// Map a Halo campaign level code (a10, a50, ...) to its mission title. Falls back to the
+/// Map a campaign level code (a10, a50, ...) to its mission title. Falls back to the
 /// raw id. Shown as "Truth and Reconciliation (a50)".
 fn mission_title(level: &str) -> String {
     let id = level.trim().to_ascii_lowercase();

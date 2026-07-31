@@ -263,7 +263,7 @@ pub fn execute(pc: *mut u8, c: Cmd) {
             Cmd::Slomo(v) => {
                 set_time_dilation(v);
                 // Drive the real Blam sim clock: game_speed in game_time_globals (the sim
-                // runs in HaloSimulation_tag_release.dll on its own clock). apply()
+                // runs in its own module on its own clock). apply()
                 // resolves the clock itself; the per-frame hold_time re-asserts it.
                 let landed = crate::simtime::apply(v);
                 if !TIME_APPLIED.swap(true, Ordering::Relaxed) {
@@ -840,7 +840,7 @@ fn blam_pause(pc: *mut u8, on: bool) {
 /// `game_speed` field (a float that reads 1.0 at normal speed).
 fn diag_time(_pc: *mut u8) {
     let ran = crate::seh::guard(|| unsafe {
-        crate::rep!("[diag] HaloSimulation base = 0x{:x}", crate::mem::sim_base());
+        crate::rep!("[diag] sim base = 0x{:x}", crate::mem::sim_base());
         let t = crate::simtime::resolve_now();
         if t == 0 {
             crate::rep!("[diag] game_time_globals NOT found on any thread");

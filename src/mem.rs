@@ -23,14 +23,14 @@ pub fn base() -> usize {
     BASE.load(Ordering::Relaxed)
 }
 
-/// Base address of `HaloSimulation_tag_release.dll` (the Blam sim), or 0 if not loaded.
+/// Base address of the Blam simulation module, or 0 if not loaded.
 /// Cached after first successful resolve. The sim clock (`game_time_globals`) lives here.
 pub fn sim_base() -> usize {
     let cached = SIM_BASE.load(Ordering::Relaxed);
     if cached != 0 {
         return cached;
     }
-    // UTF-16, NUL-terminated: "HaloSimulation_tag_release.dll"
+    // UTF-16, NUL-terminated name of the simulation module.
     let name: Vec<u16> = "HaloSimulation_tag_release.dll"
         .encode_utf16()
         .chain(core::iter::once(0))

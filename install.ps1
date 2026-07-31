@@ -1,7 +1,7 @@
 #Requires -Version 5.0
 <#
 .SYNOPSIS
-    Installs Huragok into Halo: Campaign Evolved.
+    Installs Huragok into the game.
 
 .DESCRIPTION
     Copies the dwmapi proxy next to the game and drops huragok.dll into the game's
@@ -20,7 +20,7 @@
     .\install.ps1
 
 .EXAMPLE
-    .\install.ps1 -GamePath "D:\Games\Halo Campaign Evolved"
+    .\install.ps1 -GamePath "D:\Games\Campaign Evolved"
 #>
 [CmdletBinding()]
 param(
@@ -43,7 +43,7 @@ function Write-Header {
     Write-Host ''
     Write-Host '  Huragok' -ForegroundColor Cyan -NoNewline
     Write-Host '  Installer' -ForegroundColor DarkGray
-    Write-Host '  Gameplay toolbox for Halo: Campaign Evolved' -ForegroundColor DarkGray
+    Write-Host '  In-game gameplay toolbox and control panel' -ForegroundColor DarkGray
     Write-Host "  $Rule" -ForegroundColor DarkGray
     Write-Host ''
 }

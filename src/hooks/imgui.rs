@@ -69,7 +69,7 @@ static mut CMD_BUF: [u8; 256] = [0u8; 256];
 // Skulls shown as checkboxes: (label with explainer, hs skull name). Toggling one runs
 // `hs:skull_enable <name> true|false`. State is what the user last set (the game does not
 // report skull state back cheaply).
-// Every gameplay skull, generated from HaloSimulation_tag_release.dll (name, hs name).
+// Every gameplay skull, generated from the simulation module (name, hs name).
 const SKULLS: &[(&str, &str)] = &[
     ("Third Person", "skull_third_person"),
     ("Night Vision", "skull_night_vision"),

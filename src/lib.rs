@@ -1,4 +1,4 @@
-//! Huragok - a gameplay customization engine embedded into Halo: Campaign Evolved.
+//! Huragok - an in-process gameplay customization engine and control panel.
 //!
 //! Loaded as a DLL by a `dwmapi` proxy from the game's `mods\` folder. On attach it
 //! spins up a worker thread that resolves the module base, waits for the UObject

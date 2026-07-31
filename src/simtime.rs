@@ -1,6 +1,6 @@
 //! Live Blam sim clock.
 //!
-//! The Blam simulation runs in `HaloSimulation_tag_release.dll` on its own clock. The
+//! The Blam simulation runs in its own module on its own clock. The
 //! per-tick delta lives in a `game_time_globals` struct that is reached through the sim
 //! DLL's module TLS: `T = *(*(TEB.ThreadLocalStoragePointer[_tls_index]) + 0x98)`.
 //!
@@ -10,7 +10,7 @@
 //! slot, and keep the one whose struct matches the signature `tick_length == 1/tick_rate`.
 //! Once found, `T` is cached and we read/write it from any thread.
 //!
-//! Field layout (recovered from the Halo-Script getters):
+//! Field layout (recovered from the sim-script getters):
 //!   T+0x06  i16  tick_rate     (== 30)
 //!   T+0x08  f32  tick_length   (seconds per tick, ~0.0333) - the live integration delta
 

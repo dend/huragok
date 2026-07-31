@@ -143,7 +143,7 @@ pub fn init_console() {
         if GetConsoleMode(h, &mut mode) != 0 {
             SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
         }
-        let title: Vec<u16> = "Huragok - Halo hook engine"
+        let title: Vec<u16> = "Huragok - in-game hook engine"
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect();
@@ -155,7 +155,7 @@ pub fn init_console() {
 pub fn banner() {
     let rule = format!("  {DIM}{}{RESET}\n", "\u{2500}".repeat(30));
     con_write(&format!(
-        "\n  {BOLD}{ACCENT}\u{25CF}{RESET} {BOLD}Huragok{RESET} {DIM}- Halo hook engine  (build {}){RESET}\n",
+        "\n  {BOLD}{ACCENT}\u{25CF}{RESET} {BOLD}Huragok{RESET} {DIM}- in-game hook engine  (build {}){RESET}\n",
         env!("HURAGOK_BUILD")
     ));
     con_write(&rule);

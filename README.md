@@ -103,6 +103,12 @@ cargo build --release
 The DLL lands at `target\release\huragok.dll`. Every push builds the same file on
 GitHub Actions, so you can download it from a workflow run instead of building locally.
 
+## Disclaimer
+
+This is an independent, fan-made project. It is not affiliated with, endorsed by, or
+sponsored by Microsoft or Halo Studios. All game names, trademarks, and assets belong to
+their respective owners.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
