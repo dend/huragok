@@ -53,6 +53,15 @@ pub fn timeline() -> (usize, f64, bool) {
     (p.kf.len(), p.t, p.playing)
 }
 
+/// Every keyframe as `(x, y, z, pitch, yaw, roll, fov)`, for the keyframe list window.
+pub fn keyframes() -> Vec<(f64, f64, f64, f64, f64, f64, f32)> {
+    lock()
+        .kf
+        .iter()
+        .map(|k| (k.x, k.y, k.z, k.pitch, k.yaw, k.roll, k.fov))
+        .collect()
+}
+
 /// Capture the current camera POV as a keyframe (max 32).
 pub fn add() {
     let s = cam();

@@ -34,7 +34,6 @@ const TEB_TLS_POINTER: usize = 0x58; // TEB.ThreadLocalStoragePointer
 
 static GAME_TIME: AtomicUsize = AtomicUsize::new(0);
 static SCAN_TICK: AtomicUsize = AtomicUsize::new(0); // throttle counter for the thread walk
-static NORMALIZED: AtomicBool = AtomicBool::new(false); // stock timing restored at boot
 
 type NtQitFn =
     unsafe extern "system" fn(*mut c_void, u32, *mut c_void, u32, *mut u32) -> i32;
@@ -81,8 +80,8 @@ fn looks_like_game_time(t: usize) -> bool {
     ok
 }
 
-/// Read one thread's TLS slot for the sim's `game_time_globals`; 0 if absent/mismatched.
-unsafe fn read_thread_gt(tid: u32, idx: usize, nt: NtQitFn) -> usize {
+/// Read the raw pointer at one thread's TLS `slot`; 0 if the thread has no such block.
+unsafe fn read_thread_slot(tid: u32, idx: usize, nt: NtQitFn, slot: usize) -> usize {
     let h = OpenThread(THREAD_QUERY_INFORMATION, 0, tid);
     if h.is_null() {
         return 0;
@@ -107,23 +106,17 @@ unsafe fn read_thread_gt(tid: u32, idx: usize, nt: NtQitFn) -> usize {
         if tls_block == 0 {
             return;
         }
-        t = *((tls_block + GTG_TLS_SLOT) as *const usize);
+        t = *((tls_block + slot) as *const usize);
     });
-    if looks_like_game_time(t) {
-        t
-    } else {
-        0
-    }
+    t
 }
 
-/// Walk every thread once to locate `game_time_globals`. Logs the outcome.
-unsafe fn scan_all_threads() -> usize {
+/// Walk every thread once, returning the value at TLS `slot` for the first thread whose
+/// block passes `valid`. 0 if none.
+unsafe fn scan_slot(slot: usize, valid: fn(usize) -> bool) -> usize {
     let idx = match tls_index() {
         Some(i) => i,
-        None => {
-            crate::rep!("[simtime] sim DLL not loaded");
-            return 0;
-        }
+        None => return 0,
     };
     let nt = match nt_qit() {
         Some(f) => f,
@@ -137,14 +130,12 @@ unsafe fn scan_all_threads() -> usize {
     let mut te: THREADENTRY32 = core::mem::zeroed();
     te.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
     let mut found = 0usize;
-    let mut scanned = 0u32;
     if Thread32First(snap, &mut te) != 0 {
         loop {
             if te.th32OwnerProcessID == pid {
-                scanned += 1;
-                let t = read_thread_gt(te.th32ThreadID, idx, nt);
-                if t != 0 {
-                    found = t;
+                let v = read_thread_slot(te.th32ThreadID, idx, nt, slot);
+                if v != 0 && valid(v) {
+                    found = v;
                     break;
                 }
             }
@@ -155,10 +146,114 @@ unsafe fn scan_all_threads() -> usize {
         }
     }
     CloseHandle(snap);
+    found
+}
+
+/// Locate `game_time_globals` (TLS slot 0x98). Logs on success.
+unsafe fn scan_all_threads() -> usize {
+    let found = scan_slot(GTG_TLS_SLOT, looks_like_game_time);
     if found != 0 {
-        crate::rep!("[simtime] locked on game_time=0x{:x} ({} threads)", found, scanned);
+        crate::rep!("[simtime] locked on game_time=0x{:x}", found);
     }
     found
+}
+
+const GG_TLS_SLOT: usize = 0x60; // TLS block -> sim game-globals block
+static GAME_GLOBALS: AtomicUsize = AtomicUsize::new(0);
+
+/// A plausible sim game-globals block: the game/scenario-active gate byte at +0x10 is 1 or 2.
+fn looks_like_game_globals(blk: usize) -> bool {
+    if blk < 0x1_0000 || blk >= 0x0000_8000_0000_0000 {
+        return false;
+    }
+    let mut ok = false;
+    crate::seh::guard(|| unsafe {
+        let s = *((blk + 0x10) as *const u8);
+        ok = s == 1 || s == 2;
+    });
+    ok
+}
+
+/// Resolve (cached) the sim game-globals block, reached via the sim thread's TLS slot 0x60.
+/// Holds difficulty (+0x1E4 sbyte), insertion/checkpoint index (+0x1F0 u16), won (+0x1EBD4).
+/// 0 if not currently resolvable. Throttled thread walk when unresolved.
+pub fn game_globals() -> usize {
+    let cached = GAME_GLOBALS.load(Ordering::Relaxed);
+    if cached != 0 && looks_like_game_globals(cached) {
+        return cached;
+    }
+    if SCAN_TICK.fetch_add(1, Ordering::Relaxed) % 30 != 0 {
+        return 0;
+    }
+    let found = unsafe { scan_slot(GG_TLS_SLOT, looks_like_game_globals) };
+    GAME_GLOBALS.store(found, Ordering::Relaxed);
+    found
+}
+
+/// Turn night vision on/off by clearing bit 40 everywhere it is latched (the skull-apply
+/// code has no off-branch for NV, so we clear all three additive stores directly):
+///   1. global sim skull set  `gameglobals+0x1EBE0`  (render reads live)
+///   2. player-effect accumulator  `*(sim+0x2C0C978)` -> `+8` -> `+0x8980/+0x8988` (player 0)
+/// All plain writable memory, no TLS beyond the game-globals block. Logs a readback.
+pub fn set_night_vision(on: bool) {
+    const NV: u64 = 1u64 << 40;
+    let gg = game_globals();
+    crate::seh::guard(|| unsafe {
+        if gg != 0 {
+            let p = (gg + 0x1ebe0) as *mut u64;
+            let before = *p;
+            *p = if on { before | NV } else { before & !NV };
+            crate::rep!("[nv] mask 0x{:012x} -> 0x{:012x}", before, *p);
+        } else {
+            crate::rep!("[nv] game-globals not resolved (toggle again)");
+        }
+    });
+    let sb = crate::mem::sim_base();
+    if sb != 0 {
+        crate::seh::guard(|| unsafe {
+            let base = *((sb + 0x02c0_c978) as *const usize);
+            if base > 0x10000 {
+                let slot = *((base + 8) as *const usize); // player 0 slot
+                if slot > 0x10000 {
+                    let a = (slot + 0x8980) as *mut u64;
+                    let b = (slot + 0x8988) as *mut u64;
+                    let (ba, bb) = (*a, *b);
+                    *a = if on { ba | NV } else { ba & !NV };
+                    *b = if on { bb | NV } else { bb & !NV };
+                    crate::rep!("[nv] accum a 0x{:012x}->0x{:012x} b 0x{:012x}->0x{:012x}", ba, *a, bb, *b);
+                }
+            }
+        });
+    }
+
+    // NOTE: a blind sweep of the per-unit trait-latch table (sim+0x174fA40) to clear bit 40
+    // corrupts memory - bit 40 (0x010000000000) is a normal bit of a heap pointer, so
+    // clearing it across the table truncated live pointers and crashed the sim. Clearing
+    // that latch safely needs the player's EXACT unit-table index, not a sweep; deferred.
+}
+
+/// Directly set or clear a skull bit in the SIM skull set at `gameglobals+0x1EBE0`. Render
+/// effects (e.g. night vision = bit 40) read this qword live every frame, so this toggles
+/// them both ways - it is the off-switch the HS `skull_enable false` fails to perform (HS
+/// mis-parses `false`, leaving the bit set). Only one transition-driven writer touches this
+/// qword, so a direct write is not undone. Returns whether the write landed.
+pub fn set_sim_skull(bit: u8, on: bool) -> bool {
+    let gg = game_globals();
+    if gg == 0 {
+        crate::rep!("[skull] sim game-globals not resolved yet; try again");
+        return false;
+    }
+    let mut ok = false;
+    crate::seh::guard(|| unsafe {
+        let p = (gg + 0x1ebe0) as *mut u64;
+        let mask = 1u64 << (bit as u32);
+        *p = if on { *p | mask } else { *p & !mask };
+        ok = true;
+    });
+    if ok {
+        crate::rep!("[skull] sim skull bit {} {}", bit, if on { "set" } else { "clear" });
+    }
+    ok
 }
 
 /// One-shot resolve (unthrottled): return the cached pointer if still valid, else do a
@@ -175,22 +270,21 @@ pub fn resolve_now() -> usize {
     found
 }
 
-/// Throttled resolve for the command path: returns the cached pointer immediately, or
-/// scans at most once every ~30 calls until found. NEVER call this per-frame - the scan
-/// walks every thread and would stall the game thread (which manifests as the sim
-/// catching up in bursts). The per-frame hold uses [`set_scale`], which never scans.
-pub fn ensure() -> usize {
+/// Return a validated `game_time` pointer, re-resolving (throttled) when the cache is
+/// empty or has gone stale - a level reload / respawn can allocate a new struct. The
+/// signature check is SEH-guarded, so a freed pointer faults harmlessly and just triggers
+/// a rescan. 0 when not currently resolvable. Safe per-frame: it only walks threads while
+/// unresolved, at most once every ~30 calls.
+fn ptr() -> usize {
     let t = GAME_TIME.load(Ordering::Relaxed);
-    if t != 0 {
+    if t != 0 && looks_like_game_time(t) {
         return t;
     }
     if SCAN_TICK.fetch_add(1, Ordering::Relaxed) % 30 != 0 {
         return 0;
     }
     let found = unsafe { scan_all_threads() };
-    if found != 0 {
-        GAME_TIME.store(found, Ordering::Relaxed);
-    }
+    GAME_TIME.store(found, Ordering::Relaxed);
     found
 }
 
@@ -210,15 +304,15 @@ pub fn read() -> Option<(i16, f32, f32)> {
     out
 }
 
-/// Apply a uniform time scale: write `game_speed` (T+0x10) = `scale`, and pin
-/// `tick_length` (T+0x08) back to the stock `1/tick_rate`. Pinning tick_length is
-/// deliberate - scaling it directly (an earlier approach) desynced animation from motion
-/// AND persisted across restarts (the game saves its timing), which is what caused the
-/// out-of-the-box super-speed. Now `game_speed` is the sole scaler and tick_length is
-/// always kept stock. `scale < 1` = slow-mo, `> 1` = fast, `== 1` = normal.
-/// HOT PATH: cached pointer only, never scans (call [`ensure`] from the command path).
+static APPLIED_ONCE: AtomicBool = AtomicBool::new(false);
+
+/// Apply a uniform time scale: write `game_speed` (T+0x10) = `scale` and pin `tick_length`
+/// (T+0x08) to stock `1/tick_rate`. `game_speed` is the sole scaler; `tick_length` is kept
+/// stock because scaling it desyncs animation from motion and persists across restarts.
+/// `scale < 1` = slow-mo, `> 1` = fast, `== 1` = normal. Re-validates the clock pointer,
+/// so it survives level reloads.
 pub fn apply(scale: f32) -> bool {
-    let t = GAME_TIME.load(Ordering::Relaxed);
+    let t = ptr();
     if t == 0 {
         return false;
     }
@@ -226,26 +320,38 @@ pub fn apply(scale: f32) -> bool {
     crate::seh::guard(|| unsafe {
         let tr = *((t + GTG_TICK_RATE) as *const i16) as f32;
         if tr >= 1.0 {
-            *((t + GTG_TICK_LENGTH) as *mut f32) = 1.0 / tr; // pin stock per-tick delta
-            *((t + GTG_GAME_SPEED) as *mut f32) = scale; // uniform time scale
+            *((t + GTG_TICK_LENGTH) as *mut f32) = 1.0 / tr;
+            *((t + GTG_GAME_SPEED) as *mut f32) = scale;
             done = true;
         }
     });
+    if done && !APPLIED_ONCE.swap(true, Ordering::Relaxed) {
+        crate::rep!("[simtime] sim clock reached (game_speed live, tick_length pinned stock)");
+    }
     done
 }
 
-/// Boot maintenance (call from the worker loop): resolve the clock (throttled) and, once
-/// found, normalize it to stock ONCE - clearing any `tick_length` the game restored from a
-/// previous session (which would otherwise run the sim fast/slow out of the box).
-pub fn maintain() {
-    if NORMALIZED.load(Ordering::Relaxed) {
-        return;
+/// Keep `tick_length` at stock `1/tick_rate` WITHOUT touching `game_speed`. Called every
+/// frame while the user is not scaling time, so the game's persisted-fast tick_length
+/// (which caused super-speed at boot and after a death/checkpoint reload) is corrected
+/// continuously. Only writes when it has actually drifted, leaving scripted `game_speed`
+/// moments and pause alone. Returns whether the clock was reachable.
+pub fn pin_tick_length() -> bool {
+    let t = ptr();
+    if t == 0 {
+        return false;
     }
-    if ensure() == 0 {
-        return;
-    }
-    if apply(1.0) {
-        NORMALIZED.store(true, Ordering::Relaxed);
-        crate::rep!("[simtime] normalized sim clock to stock (game_speed=1.0, tick_length=1/rate)");
-    }
+    let mut ok = false;
+    crate::seh::guard(|| unsafe {
+        let tr = *((t + GTG_TICK_RATE) as *const i16) as f32;
+        if tr >= 1.0 {
+            let stock = 1.0 / tr;
+            let cur = *((t + GTG_TICK_LENGTH) as *const f32);
+            if !cur.is_finite() || (cur - stock).abs() > stock * 0.01 {
+                *((t + GTG_TICK_LENGTH) as *mut f32) = stock;
+            }
+            ok = true;
+        }
+    });
+    ok
 }

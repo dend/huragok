@@ -50,6 +50,13 @@ pub enum Cmd {
     SimFreeze,
     SimUnfreeze,
     DiagTime,
+    DiagSkulls,
+    DiagView,
+    DiagMission,
+    SkullBit(u8, bool),
+    SimSkull(u8, bool),
+    NightVision(bool),
+    Console(&'static str),
     FadeOut,
     FadeIn,
 }

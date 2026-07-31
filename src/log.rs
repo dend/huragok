@@ -9,10 +9,11 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use std::io::Write;
 use std::sync::Mutex;
 
-use windows_sys::Win32::Storage::FileSystem::WriteFile;
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Storage::FileSystem::{CreateFileW, WriteFile, OPEN_EXISTING};
 use windows_sys::Win32::System::Console::{
-    AllocConsole, GetConsoleMode, GetStdHandle, SetConsoleMode, SetConsoleOutputCP,
-    SetConsoleTitleW, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_OUTPUT_HANDLE,
+    AllocConsole, GetConsoleMode, SetConsoleMode, SetConsoleOutputCP, SetConsoleTitleW,
+    SetStdHandle, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
 };
 
 const RESET: &str = "\x1b[0m";
@@ -21,6 +22,20 @@ const DIM: &str = "\x1b[38;2;128;128;128m";
 const BOLD: &str = "\x1b[1m";
 
 static CONOUT: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+
+// Recent plain-text log lines, mirrored for the in-game ImGui console.
+static LINES: Mutex<std::collections::VecDeque<String>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// Copy the last `max` log lines (oldest-first) into `out`, for the ImGui console.
+pub fn recent(out: &mut Vec<String>, max: usize) {
+    out.clear();
+    let l = LINES.lock().unwrap_or_else(|e| e.into_inner());
+    let start = l.len().saturating_sub(max);
+    for s in l.iter().skip(start) {
+        out.push(s.clone());
+    }
+}
 
 struct LogState {
     last: String,
@@ -83,13 +98,47 @@ fn con_write(s: &str) {
     }
 }
 
-/// Allocate a console, enable UTF-8 + ANSI colour, and title it.
+/// Allocate a console, enable UTF-8 + ANSI colour, and title it. We keep a PRIVATE handle
+/// to the console for our own output and repoint the process std handles at NUL, so the
+/// game's / Steam's own stdout logging (which can include account identifiers) never lands
+/// in our console - only our `[tag]` lines appear.
 pub fn init_console() {
     unsafe {
         AllocConsole();
         SetConsoleOutputCP(65001); // UTF-8, so glyphs render
-        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const FILE_SHARE_RW: u32 = 0x0000_0003;
+
+        let conout: Vec<u16> = "CONOUT$".encode_utf16().chain(core::iter::once(0)).collect();
+        let h = CreateFileW(
+            conout.as_ptr(),
+            GENERIC_WRITE | GENERIC_READ,
+            FILE_SHARE_RW,
+            core::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            core::ptr::null_mut(),
+        );
         CONOUT.store(h as *mut c_void, Ordering::SeqCst);
+
+        // Send the game's stdout/stderr to NUL.
+        let nul: Vec<u16> = "NUL".encode_utf16().chain(core::iter::once(0)).collect();
+        let devnull = CreateFileW(
+            nul.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_RW,
+            core::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            core::ptr::null_mut(),
+        );
+        if devnull != INVALID_HANDLE_VALUE {
+            SetStdHandle(STD_OUTPUT_HANDLE, devnull);
+            SetStdHandle(STD_ERROR_HANDLE, devnull);
+        }
+
         let mut mode = 0u32;
         if GetConsoleMode(h, &mut mode) != 0 {
             SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
@@ -106,7 +155,8 @@ pub fn init_console() {
 pub fn banner() {
     let rule = format!("  {DIM}{}{RESET}\n", "\u{2500}".repeat(30));
     con_write(&format!(
-        "\n  {BOLD}{ACCENT}\u{25CF}{RESET} {BOLD}Huragok{RESET} {DIM}- Halo hook engine{RESET}\n"
+        "\n  {BOLD}{ACCENT}\u{25CF}{RESET} {BOLD}Huragok{RESET} {DIM}- Halo hook engine  (build {}){RESET}\n",
+        env!("HURAGOK_BUILD")
     ));
     con_write(&rule);
     con_write(&format!(
@@ -135,6 +185,14 @@ pub fn emit(msg: &str) {
     if let Some(f) = st.file.as_mut() {
         let _ = writeln!(f, "{msg}");
         let _ = f.flush();
+    }
+
+    // Mirror into the ring buffer the ImGui console reads.
+    if let Ok(mut l) = LINES.lock() {
+        l.push_back(msg.to_string());
+        while l.len() > 200 {
+            l.pop_front();
+        }
     }
 
     // Console: collapse consecutive duplicates.

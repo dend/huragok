@@ -17,6 +17,7 @@ static TD: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0f32 bits
 static FULLBODY: AtomicBool = AtomicBool::new(false);
 static SCALE: AtomicU64 = AtomicU64::new(0); // f64 bits; 0.0 = do not force
 static TIME_APPLIED: AtomicBool = AtomicBool::new(false); // log the sim-clock reach once
+static SKULL_OFFSET: AtomicUsize = AtomicUsize::new(0); // ActiveSkulls field offset + 1 (0 = unknown)
 
 pub fn set_pc(p: *mut u8) {
     PC.store(p as usize, Ordering::Relaxed);
@@ -255,16 +256,15 @@ pub fn execute(pc: *mut u8, c: Cmd) {
                 }
                 pawn_fx(pawn, c);
             }
-            Cmd::FullbodyOn => try_third_person(pc, true),
-            Cmd::FullbodyOff => try_third_person(pc, false),
-            Cmd::ImguiInput => imgui_toggle_input(pc),
+            Cmd::FullbodyOn => set_perspective(pc, 2),  // ThirdPerson
+            Cmd::FullbodyOff => set_perspective(pc, 1), // FirstPerson
+            Cmd::ImguiInput => run_console(pc, "ImGui.ToggleInput"),
+            Cmd::Console(s) => run_console(pc, s),
             Cmd::Slomo(v) => {
                 set_time_dilation(v);
                 // Drive the real Blam sim clock: game_speed in game_time_globals (the sim
-                // runs in HaloSimulation_tag_release.dll on its own clock). Resolve via the
-                // throttled thread walk here (command path); the per-frame hold_time then
-                // re-asserts it every frame.
-                crate::simtime::ensure();
+                // runs in HaloSimulation_tag_release.dll on its own clock). apply()
+                // resolves the clock itself; the per-frame hold_time re-asserts it.
                 let landed = crate::simtime::apply(v);
                 if !TIME_APPLIED.swap(true, Ordering::Relaxed) {
                     match crate::simtime::read() {
@@ -279,6 +279,22 @@ pub fn execute(pc: *mut u8, c: Cmd) {
             Cmd::SimFreeze => blam_pause(pc, true),
             Cmd::SimUnfreeze => blam_pause(pc, false),
             Cmd::DiagTime => diag_time(pc),
+            Cmd::DiagSkulls => diag_skulls(pc),
+            Cmd::DiagView => diag_view(pc),
+            Cmd::DiagMission => crate::campaign::diag_mission(pc),
+            Cmd::SkullBit(v, on) => skull_set_bit(pc, v, on),
+            Cmd::SimSkull(bit, on) => {
+                crate::simtime::set_sim_skull(bit, on);
+            }
+            Cmd::NightVision(on) => {
+                // ON: let the game's skull blueprint spawn the NV post-process actor; then
+                // enable its component. OFF: disable the spawned component (the real off -
+                // the skull blueprint has no despawn path, which is why nothing else worked).
+                if on {
+                    run_console(pc, "hs:skull_enable skull_night_vision true");
+                }
+                set_nv_postprocess(pc, on);
+            }
             Cmd::FadeOut => camera_fade(true),
             Cmd::FadeIn => camera_fade(false),
         }
@@ -366,6 +382,46 @@ fn pawn_fx(pawn: *mut u8, c: Cmd) {
     } else {
         crate::rep!("[pawnfx] {:?} faulted - skipped (needs game state)", c);
     }
+}
+
+/// Switch the pawn's camera perspective via the native `ABlamPawn::SetCameraPerspective`
+/// (1 = first-person, 2 = third-person). This is the real path (confirmed by disassembly):
+/// it writes the authoritative perspective field, runs the inner driver that swaps the
+/// first/third meshes and weapon actors, and broadcasts the perspective-changed multicast
+/// delegate that makes the camera manager actually move the camera. A raw field write does
+/// none of that, which is why every earlier attempt reverted.
+///
+/// Two rules from the disassembly: (1) do NOT pre-write pawn+0x3C1 - the function early-
+/// outs if it already equals the requested value; (2) open the third-person show gate
+/// (repmgr+0x13c) the inner driver reads, or the body/weapon can stay hidden.
+fn set_perspective(pc: *mut u8, persp: u8) {
+    let ran = crate::seh::guard(|| unsafe {
+        let pawn = get_pawn(pc);
+        if pawn.is_null() {
+            crate::rep!("[view] no pawn");
+            return;
+        }
+        if persp == 2 {
+            let rep = *((pawn as usize + PAWN_REPMGR) as *const *mut u8);
+            if !rep.is_null() {
+                *((rep as usize + REPMGR_GATE_SHOW) as *mut u8) = 1;
+            }
+        }
+        type SetPersp = unsafe extern "system" fn(*mut u8, u8, *mut i32);
+        let f: SetPersp = core::mem::transmute(base() + SET_CAMERA_PERSPECTIVE);
+        let mut ctx = [-1i32, -1i32];
+        f(pawn, persp, ctx.as_mut_ptr());
+        let cur = *((pawn as usize + PAWN_PERSPECTIVE) as *const u8);
+        crate::rep!("[view] SetCameraPerspective({}) -> perspective now {}", persp, cur);
+    });
+    if !ran {
+        crate::rep!("[view] set-perspective faulted");
+    }
+}
+
+/// Run a console command line (from the console input reader), via ExecuteConsoleCommand.
+pub fn run_console_line(pc: *mut u8, cmd: &str) {
+    run_console(pc, cmd);
 }
 
 /// Third-person body, surgically. The pawn owns EIGHT skeletal meshes: first-person
@@ -514,10 +570,14 @@ pub fn show_full_body(pc: *mut u8, on: bool) {
 /// user returns to 1.0, keep writing the normal value so it restores cleanly). No-op until
 /// the Time slider has been touched at least once.
 pub fn hold_time() {
-    if !TIME_APPLIED.load(Ordering::Relaxed) {
-        return;
+    if TIME_APPLIED.load(Ordering::Relaxed) {
+        // User is scaling time: hold their game_speed each frame.
+        crate::simtime::apply(time_dilation());
+    } else {
+        // Not scaling: keep tick_length stock so a game-restored fast value (boot or
+        // after a death/checkpoint reload) can never leave the sim running fast.
+        crate::simtime::pin_tick_length();
     }
-    crate::simtime::apply(time_dilation());
 }
 
 /// Re-assert third-person body and forced scale every frame (pawn tick resets them).
@@ -561,6 +621,201 @@ pub fn hold_pawn_state() {
             }
         }
     });
+}
+
+/// Probe the Blam skull system so we can wire ThirdPerson / NightVision / cheats: find the
+/// live `BlamSkullsGameStateComponent`, list its functions (in case there is a setter),
+/// read the current `ActiveSkulls` value, locate its field offset, and dump the
+/// `EBlamGameSkulls` enum bit values. Read-only. SEH-guarded.
+fn diag_skulls(_pc: *mut u8) {
+    use crate::ue::fname::obj_name;
+
+    let comp = find_live_by_class("BlamSkullsGameStateComponent");
+    if comp.is_null() {
+        crate::rep!("[skull] BlamSkullsGameStateComponent not live");
+        return;
+    }
+    let cls = unsafe { class_of(comp) };
+    crate::rep!("[skull] component @ {:p} class={}", comp, unsafe { obj_name(cls) });
+
+    match crate::ue::reflect::property_offset(cls, "ActiveSkulls") {
+        Some(off) if (0..0x4000).contains(&off) => {
+            SKULL_OFFSET.store(off as usize + 1, Ordering::Relaxed);
+            crate::seh::guard(|| unsafe {
+                // ActiveSkulls is a 32-byte (256-bit) bitset; dump it as 4 u64 words.
+                let base = comp as usize + off as usize;
+                let w0 = *(base as *const u64);
+                let w1 = *((base + 8) as *const u64);
+                let w2 = *((base + 16) as *const u64);
+                let w3 = *((base + 24) as *const u64);
+                crate::rep!(
+                    "[skull] ActiveSkulls @ +0x{:x} = {:016x} {:016x} {:016x} {:016x}",
+                    off, w0, w1, w2, w3
+                );
+            });
+        }
+        other => crate::rep!("[skull] ActiveSkulls offset unresolved ({:?})", other),
+    }
+}
+
+/// Toggle the night-vision post-process overlay via UE reflection (safe - no sim memory
+/// pokes). Two systems exist: a placed `BP_NightVision_V2` actor with a UPostProcessComponent,
+/// and the pawn's `NightVisionDMI` dynamic material blended onto the camera. We drive both:
+/// the placed actor's component (BlendWeight/bEnabled) and the pawn DMI's `Opacity` scalar.
+fn set_nv_postprocess(pc: *mut u8, on: bool) {
+    let ran = crate::seh::guard(|| unsafe {
+        use crate::ue::object::{num_elements, object_at};
+        use crate::ue::reflect::{class_chain_has, property_offset};
+
+        // --- System B: placed BP_NightVision_V2 actor's post-process component ---
+        let actor = find_live_by_class("BP_NightVision");
+        if !actor.is_null() {
+            let n = num_elements();
+            let mut comp: *mut u8 = core::ptr::null_mut();
+            for i in 0..n {
+                let o = object_at(i);
+                if o.is_null() {
+                    continue;
+                }
+                let outer = *((o as usize + UO_OUTER) as *const *mut u8);
+                if outer == actor && class_chain_has(class_of(o), "PostProcessComponent") {
+                    comp = o;
+                    break;
+                }
+            }
+            if !comp.is_null() {
+                let cls = class_of(comp);
+                if let Some(off) = property_offset(cls, "BlendWeight") {
+                    if (0..0x4000).contains(&off) {
+                        *((comp as usize + off as usize) as *mut f32) = if on { 1.0 } else { 0.0 };
+                    }
+                }
+                if let Some(off) = property_offset(cls, "bEnabled") {
+                    if (0..0x4000).contains(&off) {
+                        *((comp as usize + off as usize) as *mut u8) = on as u8;
+                    }
+                }
+                crate::rep!("[nv] PPV component {:p} -> {}", comp, if on { "on" } else { "off" });
+            } else {
+                crate::rep!("[nv] BP_NightVision actor has no PostProcessComponent");
+            }
+        } else if !on {
+            crate::rep!("[nv] no BP_NightVision actor to disable (not spawned?)");
+        }
+    });
+    if !ran {
+        crate::rep!("[nv] post-process toggle faulted");
+    }
+    let _ = pc;
+}
+
+/// Probe the third-person / view-mode mechanism: enumerate UFunctions on the pawn and its
+/// Blam actor whose names hint at camera perspective / view mode, and dump the
+/// `EBlamCameraPerspective` enum values. The Blueprint (`GetPawnViewModeAndWeaponActors`,
+/// `Switch on EBlamCameraPerspective`) proves this system exists; we want its setter.
+fn diag_view(pc: *mut u8) {
+    use crate::ue::fname::{name_by_id, obj_name};
+    use crate::ue::object::{num_elements, object_at};
+    use crate::ue::reflect::super_of;
+
+    let pawn = unsafe { get_pawn(pc) };
+    if pawn.is_null() {
+        crate::rep!("[view] no pawn");
+        return;
+    }
+    let actor = unsafe { call_ret_ptr(pawn, "GetBlamObjectActor") };
+    crate::rep!("[view] pawn @ {:p} class={} actor @ {:p}", pawn, unsafe { obj_name(class_of(pawn)) }, actor);
+
+    let needles = [
+        "Perspective", "ViewMode", "View", "Camera", "Persp", "Vision", "Night",
+        "Spectate", "ThirdPerson", "FirstPerson", "Weapon", "Skull", "Cheat", "Ammo",
+    ];
+    for (label, obj) in [("pawn", pawn), ("actor", actor)] {
+        if obj.is_null() {
+            continue;
+        }
+        crate::seh::guard(|| unsafe {
+            let mut c = class_of(obj);
+            for _ in 0..10 {
+                if c.is_null() {
+                    break;
+                }
+                let mut child = *((c as usize + US_CHILDREN) as *const *mut u8);
+                let mut steps = 0;
+                while !child.is_null() && steps < 8192 {
+                    if obj_name(class_of(child)) == "Function" {
+                        let nm = obj_name(child);
+                        if needles.iter().any(|s| nm.contains(s)) {
+                            let ps = *((child as usize + UFN_PARMSSIZE) as *const u16);
+                            crate::rep!("[view] {} fn {}::{} ParmsSize={}", label, obj_name(c), nm, ps);
+                        }
+                    }
+                    child = *((child as usize + UF_NEXT) as *const *mut u8);
+                    steps += 1;
+                }
+                c = super_of(c);
+            }
+        });
+    }
+
+    crate::seh::guard(|| unsafe {
+        let n = num_elements();
+        for i in 0..n {
+            let o = object_at(i);
+            if o.is_null() {
+                continue;
+            }
+            if obj_name(class_of(o)) == "Enum" && obj_name(o) == "EBlamCameraPerspective" {
+                let data = *((o as usize + 0x40) as *const *const u8);
+                let num = *((o as usize + 0x48) as *const i32);
+                crate::rep!("[view] EBlamCameraPerspective Num={}", num);
+                if !data.is_null() && num > 0 && num < 64 {
+                    for j in 0..num as usize {
+                        let e = data.add(j * 16);
+                        let id = *(e as *const u32);
+                        let val = *((e as usize + 8) as *const i64);
+                        crate::rep!("[view] {} = {}", name_by_id(id), val);
+                    }
+                }
+                break;
+            }
+        }
+    });
+}
+
+/// Set or clear a skull's bit in `BlamSkullsGameStateComponent.ActiveSkulls` (the enum
+/// value is the bit index, e.g. NightVision=40, ThirdPerson=55, Bandana=18). Requires the
+/// offset resolved by [`diag_skulls`] first. Whether flipping the bit actually triggers
+/// the skull depends on the game re-reading it - this is the test.
+fn skull_set_bit(pc: *mut u8, value: u8, on: bool) {
+    let ran = crate::seh::guard(|| unsafe {
+        // 1) Keep the component's ActiveSkulls bitset consistent (if the offset resolved).
+        let raw = SKULL_OFFSET.load(Ordering::Relaxed);
+        if raw != 0 {
+            let comp = find_live_by_class("BlamSkullsGameStateComponent");
+            if !comp.is_null() {
+                let p = ((comp as usize + (raw - 1)) + value as usize / 8) as *mut u8;
+                let mask = 1u8 << (value % 8);
+                *p = if on { *p | mask } else { *p & !mask };
+            }
+        }
+        // 2) Invoke the pawn's skull-apply event with a 32-byte bitset holding just this
+        //    skull. OnSkullsAdded/OnSkullsRemoved are what the game calls to actually apply
+        //    a skull's effect (the field write alone is inert). ParmsSize 32 = the bitset.
+        let pawn = get_pawn(pc);
+        if pawn.is_null() {
+            crate::rep!("[skull] no pawn");
+            return;
+        }
+        let mut bits = [0u8; 32];
+        bits[value as usize / 8] = 1u8 << (value % 8);
+        let fname = if on { "OnSkullsAdded" } else { "OnSkullsRemoved" };
+        let ok = pe_call(pawn, fname, bits.as_mut_ptr() as *mut c_void, 32);
+        crate::rep!("[skull] {}(bit {}) -> {}", fname, value, ok);
+    });
+    if !ran {
+        crate::rep!("[skull] apply faulted");
+    }
 }
 
 /// Freeze/resume the Blam simulation itself via `SetGameAndBlamPaused`. Unlike UE's
@@ -624,29 +879,33 @@ pub fn apply_time(world: *mut u8) {
     }
 }
 
-fn imgui_toggle_input(pc: *mut u8) {
+/// Run a console command string via `UKismetSystemLibrary::ExecuteConsoleCommand`
+/// (WorldContext, FString Command, SpecificPlayer). Used for `ImGui.ToggleInput` and to
+/// test the `Blam.Skull.*` cvars (third-person / night vision / cheats).
+fn run_console(pc: *mut u8, command: &str) {
     unsafe {
         let ks = crate::ue::reflect::find_class("KismetSystemLibrary");
         if ks.is_null() {
+            crate::rep!("[console] KismetSystemLibrary not found");
             return;
         }
         let f = find_function(ks, "ExecuteConsoleCommand");
         if f.is_null() {
+            crate::rep!("[console] ExecuteConsoleCommand not found");
             return;
         }
-        let cmd: Vec<u16> = "ImGui.ToggleInput"
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect();
+        // FString Command laid out inline in the parms: {data ptr, ArrayNum, ArrayMax}.
+        let cmd: Vec<u16> = command.encode_utf16().chain(core::iter::once(0)).collect();
         let len = cmd.len() as i32;
         let mut b = [0u8; 64];
         let p = b.as_mut_ptr();
-        *(p as *mut *mut u8) = pc;
-        *(p.add(8) as *mut *const u16) = cmd.as_ptr();
-        *(p.add(0x10) as *mut i32) = len;
-        *(p.add(0x14) as *mut i32) = len;
-        *(p.add(0x18) as *mut *mut u8) = pc;
+        *(p as *mut *mut u8) = pc; // WorldContextObject
+        *(p.add(8) as *mut *const u16) = cmd.as_ptr(); // FString.Data
+        *(p.add(0x10) as *mut i32) = len; // FString.ArrayNum (incl. null)
+        *(p.add(0x14) as *mut i32) = len; // FString.ArrayMax
+        *(p.add(0x18) as *mut *mut u8) = pc; // SpecificPlayer
         process_event(pc, f, b.as_mut_ptr() as *mut c_void);
+        crate::rep!("[console] {}", command);
     }
 }
 

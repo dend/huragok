@@ -9,13 +9,16 @@
 
 #[macro_use]
 mod log;
+mod campaign;
 mod cmd;
+mod console;
 mod hooks;
 mod input;
 mod mem;
 mod offsets;
 mod paths;
 mod pawn;
+mod perf;
 mod seh;
 mod simtime;
 mod state;
@@ -51,6 +54,7 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
 /// Worker thread: bring the engine online, then hand off to feature hooks.
 unsafe extern "system" fn run(_param: *mut c_void) -> u32 {
     log::init_console();
+    console::start(); // stdin reader: type console commands (e.g. hs:skull_enable ...)
     mem::init();
     log::banner();
 
@@ -79,8 +83,6 @@ unsafe extern "system" fn run(_param: *mut c_void) -> u32 {
         input::poll_freecam();
         input::poll_hotkeys();
         paths::update();
-        simtime::maintain(); // resolve + normalize the Blam sim clock once, clearing any
-                             // fast/slow tick_length the game restored from a prior session
         Sleep(15);
     }
 }

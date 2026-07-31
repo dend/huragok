@@ -47,11 +47,85 @@ type InvisibleFn = unsafe extern "system" fn(*const c_char, *const ImVec2, i32) 
 type AddLineFn = unsafe extern "system" fn(*mut u8, *const ImVec2, *const ImVec2, u32, f32);
 type AddRectFn = unsafe extern "system" fn(*mut u8, *const ImVec2, *const ImVec2, u32, f32, i32);
 type AddCircleFn = unsafe extern "system" fn(*mut u8, *const ImVec2, f32, u32, i32);
+// InputText(label, buf, buf_size, flags, callback, user_data) -> bool.
+type InputTextFn =
+    unsafe extern "system" fn(*const c_char, *mut c_char, usize, i32, *mut c_void, *mut c_void) -> bool;
+const IMGUI_INPUT_ENTER_RETURNS_TRUE: i32 = 0x20;
+type BeginChildFn = unsafe extern "system" fn(*const c_char, *const ImVec2, i32, i32) -> bool;
+type EndChildFn = unsafe extern "system" fn();
+type SetScrollHereYFn = unsafe extern "system" fn(f32);
 
 static ORIG_DEMO: AtomicUsize = AtomicUsize::new(0);
 static HOOKED: AtomicBool = AtomicBool::new(false);
 static PANEL: AtomicBool = AtomicBool::new(false);
+static SHOW_KF: AtomicBool = AtomicBool::new(false); // keyframe list window open
+static SHOW_CONSOLE: AtomicBool = AtomicBool::new(false); // ImGui console window open
+static FLASHLIGHT: AtomicBool = AtomicBool::new(false); // flashlight checkbox state
 static FAULTED_WIDGETS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+// Input buffer for the ImGui console box. Only touched on the ImGui draw thread.
+static mut CMD_BUF: [u8; 256] = [0u8; 256];
+
+// Skulls shown as checkboxes: (label with explainer, hs skull name). Toggling one runs
+// `hs:skull_enable <name> true|false`. State is what the user last set (the game does not
+// report skull state back cheaply).
+// Every gameplay skull, generated from HaloSimulation_tag_release.dll (name, hs name).
+const SKULLS: &[(&str, &str)] = &[
+    ("Third Person", "skull_third_person"),
+    ("Night Vision", "skull_night_vision"),
+    ("Bandanna", "skull_bandanna"),
+    ("Adaptation", "skull_adaptation"),
+    ("Angry", "skull_angry"),
+    ("Armistice", "skull_armistice"),
+    ("Assassin", "skull_assassin"),
+    ("Birthday Party", "skull_birthday_party"),
+    ("Black Eye", "skull_black_eye"),
+    ("Blind", "skull_blind"),
+    ("Bonded Pair", "skull_bonded_pair"),
+    ("Boom", "skull_boom"),
+    ("Boots Off The Ground", "skull_boots_off_the_ground"),
+    ("Catch", "skull_catch"),
+    ("Efficient", "skull_efficient"),
+    ("Eye Patch", "skull_eye_patch"),
+    ("Famine", "skull_famine"),
+    ("Floor Is Lava", "skull_floor_is_lava"),
+    ("Fog", "skull_fog"),
+    ("Foreign", "skull_foreign"),
+    ("Fragile", "skull_fragile"),
+    ("Ghost", "skull_ghost"),
+    ("Give And Take", "skull_give_and_take"),
+    ("Grunt Birthday Party", "skull_grunt_birthday_party"),
+    ("Grunt Funeral", "skull_grunt_funeral"),
+    ("Hip Fire", "skull_hip_fire"),
+    ("Iron", "skull_iron"),
+    ("IWHBYD", "skull_iwhbyd"),
+    ("Jacked", "skull_jacked"),
+    ("Johnny Ammo Tree", "skull_johnny_ammo_tree"),
+    ("Leadhead", "skull_leadhead"),
+    ("Lights Out", "skull_lights_out"),
+    ("Magnified", "skull_magnified"),
+    ("Malfunction", "skull_malfunction"),
+    ("Masterblaster", "skull_masterblaster"),
+    ("Mythic", "skull_mythic"),
+    ("Pinata", "skull_pinata"),
+    ("Pop", "skull_pop"),
+    ("Recession", "skull_recession"),
+    ("Reload", "skull_reload"),
+    ("Riskrun", "skull_riskrun"),
+    ("Scarab", "skull_scarab"),
+    ("So Angry", "skull_so_angry"),
+    ("Spore Visibility", "skull_spore_visibility"),
+    ("Stow And Grow", "skull_stow_and_grow"),
+    ("Superman", "skull_superman"),
+    ("Swarm", "skull_swarm"),
+    ("Temperamental", "skull_temperamental"),
+    ("That's Just Wrong", "skull_thats_just_wrong"),
+    ("They Come Back", "skull_they_come_back"),
+    ("Thunderstorm", "skull_thunderstorm"),
+    ("Tilt", "skull_tilt"),
+    ("Tough Luck", "skull_tough_luck"),
+];
+static SKULL_STATE: [AtomicBool; SKULLS.len()] = [const { AtomicBool::new(false) }; SKULLS.len()];
 
 /// Run a widget call under SEH. On fault, skip it and log the label once.
 fn guarded(label: &'static str, f: impl FnMut()) {
@@ -100,6 +174,7 @@ pub fn toggle() {
 }
 
 unsafe extern "system" fn demo_hook(self_: *mut c_void) {
+    crate::perf::tick(); // read GAverageFPS each frame (plain global read, thread-safe)
     if PANEL.load(Ordering::Relaxed) {
         // Backstop guard around the whole draw, on top of the per-widget guards.
         guarded("panel", || unsafe { draw_panel() });
@@ -170,6 +245,30 @@ unsafe fn draw_panel() {
             }
         } else {
             label!(b"waiting for pawn...\0");
+        }
+        line!("FPS  {:.0}", crate::perf::current());
+        guarded("fps graph", || unsafe { draw_fps_graph() });
+    }
+
+    // ---- Campaign / Mission ----
+    if header!(b"Campaign\0", OPEN) {
+        let (level, diff, cp, seg) = crate::campaign::snapshot();
+        if level.is_empty() {
+            label!(b"mission: (loading)\0");
+        } else {
+            line!("Mission: {}", level);
+        }
+        if !diff.is_empty() {
+            line!("Difficulty: {}", diff);
+        }
+        if cp >= 0 {
+            line!("Checkpoint: {}", cp);
+        }
+        if seg >= 0 {
+            line!("Segment: {}", seg);
+        }
+        if btn!(b"Diag: mission\0") {
+            push(Cmd::DiagMission);
         }
     }
 
@@ -265,11 +364,7 @@ unsafe fn draw_panel() {
     if header!(b"Timeline\0", OPEN) {
         guarded("timeline", || unsafe { draw_timeline() });
         let (count, _ph, playing) = crate::paths::timeline();
-        line!(
-            "{} keyframes   {}",
-            count,
-            if playing { "playing" } else { "stopped" }
-        );
+        line!("{} keyframes   {}", count, if playing { "playing" } else { "stopped" });
         if btn!(b"Add Keyframe\0") {
             crate::paths::add();
         }
@@ -278,6 +373,10 @@ unsafe fn draw_panel() {
         }
         if btn!(b"Clear\0") {
             crate::paths::clear();
+        }
+        let kf_open = SHOW_KF.load(Ordering::Relaxed);
+        if btn!(if kf_open { b"Hide keyframe list\0" } else { b"Show keyframe list\0" }) {
+            SHOW_KF.store(!kf_open, Ordering::Relaxed);
         }
     }
 
@@ -307,11 +406,19 @@ unsafe fn draw_panel() {
         if btn!(b"Teleport to camera\0") {
             push(Cmd::Teleport);
         }
-        if btn!(b"Show full body\0") {
-            push(Cmd::FullbodyOn);
-        }
-        if btn!(b"Hide body (first-person)\0") {
-            push(Cmd::FullbodyOff);
+        // Flashlight checkbox (off may be a no-op on this build - it is enable-latched like
+        // the skulls). Third/first-person are managed by the Third Person skull.
+        let mut fl = FLASHLIGHT.load(Ordering::Relaxed);
+        let mut ch = false;
+        guarded("flashlight", || {
+            ch = checkbox(b"Flashlight\0".as_ptr() as *const c_char, &mut fl)
+        });
+        if ch {
+            FLASHLIGHT.store(fl, Ordering::Relaxed);
+            crate::console::submit(format!(
+                "hs:unit_set_integrated_flashlight (player0) {}",
+                if fl { "true" } else { "false" }
+            ));
         }
     }
 
@@ -355,14 +462,218 @@ unsafe fn draw_panel() {
         }
     }
 
+    // ---- Skulls: checkboxes, one per skull (hs:skull_enable). Any skull not listed can
+    //      still be typed into the console: hs:skull_enable skull_<name> true
+    if header!(b"Skulls\0", 0) {
+        for (i, (label, name)) in SKULLS.iter().enumerate() {
+            let mut on = SKULL_STATE[i].load(Ordering::Relaxed);
+            let mut changed = false;
+            if let Ok(l) = std::ffi::CString::new(*label) {
+                guarded("skull checkbox", || changed = checkbox(l.as_ptr(), &mut on));
+            }
+            if changed {
+                SKULL_STATE[i].store(on, Ordering::Relaxed);
+                // Night vision is a render-gated skull (bit 40) read live from the sim skull
+                // set, so we toggle it directly - HS `skull_enable false` fails to disable it.
+                // Everything else still goes through hs:skull_enable.
+                if *name == "skull_night_vision" {
+                    push(Cmd::NightVision(on));
+                } else {
+                    crate::console::submit(format!(
+                        "hs:skull_enable {} {}",
+                        name,
+                        if on { "true" } else { "false" }
+                    ));
+                }
+            }
+        }
+    }
+
     // ---- UI ----
     if header!(b"UI\0", 0) {
         if btn!(b"Toggle ImGui Input (cursor)\0") {
             push(Cmd::ImguiInput);
         }
+        let con_open = SHOW_CONSOLE.load(Ordering::Relaxed);
+        if btn!(if con_open { b"Hide console\0" } else { b"Show console\0" }) {
+            SHOW_CONSOLE.store(!con_open, Ordering::Relaxed);
+        }
     }
 
     end();
+
+    // Separate keyframe list window, toggled from the Timeline section.
+    if SHOW_KF.load(Ordering::Relaxed) {
+        guarded("kf window", || unsafe { draw_keyframe_window() });
+    }
+    // Separate console window (log tail + command input box).
+    if SHOW_CONSOLE.load(Ordering::Relaxed) {
+        guarded("console window", || unsafe { draw_console_window() });
+    }
+}
+
+/// In-game console: a tail of recent log lines plus an input box. Type a command (e.g.
+/// `hs:skull_enable skull_third_person true`) and press Enter to run it via
+/// ExecuteConsoleCommand. Needs ImGui input capture on (the "Toggle ImGui Input" button).
+unsafe fn draw_console_window() {
+    let begin: BeginFn = core::mem::transmute(base() + IMGUI_BEGIN);
+    let end: EndFn = core::mem::transmute(base() + IMGUI_END);
+    let text: TextFn = core::mem::transmute(base() + IMGUI_TEXT);
+    let input: InputTextFn = core::mem::transmute(base() + IMGUI_INPUT_TEXT);
+    let begin_child: BeginChildFn = core::mem::transmute(base() + IMGUI_BEGIN_CHILD);
+    let end_child: EndChildFn = core::mem::transmute(base() + IMGUI_END_CHILD);
+    let set_scroll: SetScrollHereYFn = core::mem::transmute(base() + IMGUI_SET_SCROLL_HERE_Y);
+
+    let mut open = true;
+    if begin(b"Huragok Console\0".as_ptr() as *const c_char, &mut open as *mut bool, 0) {
+        // Scrollable log region that fills the window minus a footer for the input line.
+        let log_size = ImVec2 { x: 0.0, y: -28.0 };
+        if begin_child(b"##log\0".as_ptr() as *const c_char, &log_size, 1, 0) {
+            let mut lines: Vec<String> = Vec::new();
+            crate::log::recent(&mut lines, 200);
+            for l in &lines {
+                if let Ok(t) = std::ffi::CString::new(l.as_str()) {
+                    text(b"%s\0".as_ptr() as *const c_char, t.as_ptr());
+                }
+            }
+            // Auto-follow only when already at the bottom, so scrolling up stays put.
+            let g = *((base() + GIMGUI_PTR) as *const usize);
+            if g != 0 {
+                let cw = *((g + IMGUI_CTX_CURRENT_WINDOW) as *const usize);
+                if cw != 0 {
+                    let sy = *((cw + IMGUI_WIN_SCROLL_Y) as *const f32);
+                    let smax = *((cw + IMGUI_WIN_SCROLLMAX_Y) as *const f32);
+                    if sy >= smax - 1.0 {
+                        set_scroll(1.0);
+                    }
+                }
+            }
+        }
+        end_child();
+
+        // Input box, pinned below the scroll region.
+        let buf = core::ptr::addr_of_mut!(CMD_BUF) as *mut c_char;
+        let submitted = input(
+            b"##cmd\0".as_ptr() as *const c_char,
+            buf,
+            256,
+            IMGUI_INPUT_ENTER_RETURNS_TRUE,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        );
+        if submitted {
+            let s = std::ffi::CStr::from_ptr(buf).to_string_lossy().trim().to_string();
+            if !s.is_empty() {
+                crate::console::submit(s);
+            }
+            *buf = 0; // clear the box
+        }
+    }
+    end();
+    if !open {
+        SHOW_CONSOLE.store(false, Ordering::Relaxed);
+    }
+}
+
+/// A sparkline of recent FPS with a 60 FPS reference line. Uses the window draw list.
+unsafe fn draw_fps_graph() {
+    let inv: InvisibleFn = core::mem::transmute(base() + IMGUI_INVISIBLE_BUTTON);
+    let add_rect: AddRectFn = core::mem::transmute(base() + IMGUI_DRAW_ADD_RECT_FILLED);
+    let add_line: AddLineFn = core::mem::transmute(base() + IMGUI_DRAW_ADD_LINE);
+
+    let g = *((base() + GIMGUI_PTR) as *const usize);
+    if g == 0 {
+        return;
+    }
+    let win = *((g + IMGUI_CTX_CURRENT_WINDOW) as *const usize);
+    if win == 0 {
+        return;
+    }
+    let dl = *((win + IMGUI_WIN_DRAWLIST) as *const usize) as *mut u8;
+    if dl.is_null() {
+        return;
+    }
+
+    let origin = *((win + IMGUI_WIN_CURSOR_POS) as *const ImVec2);
+    let size = ImVec2 { x: 320.0, y: 40.0 };
+    inv(b"##fps\0".as_ptr() as *const c_char, &size, 0);
+
+    let x0 = origin.x + 4.0;
+    let y0 = origin.y + 4.0;
+    let w = size.x - 8.0;
+    let h = size.y - 8.0;
+
+    // Colours are 0xAABBGGRR.
+    add_rect(dl, &ImVec2 { x: x0, y: y0 }, &ImVec2 { x: x0 + w, y: y0 + h }, 0xff20_2020, 4.0, 0);
+
+    let mut buf = [0f32; crate::perf::SAMPLES];
+    let n = crate::perf::samples(&mut buf);
+    if n < 2 {
+        return;
+    }
+    // Scale the y axis to whichever is larger: 120 FPS or the current peak (capped).
+    let mut peak = 120.0f32;
+    for &v in buf.iter().take(n) {
+        if v > peak {
+            peak = v;
+        }
+    }
+    peak = peak.min(360.0);
+
+    // 60 FPS reference line (dim).
+    let ref_y = y0 + h - (60.0 / peak).clamp(0.0, 1.0) * h;
+    add_line(dl, &ImVec2 { x: x0, y: ref_y }, &ImVec2 { x: x0 + w, y: ref_y }, 0xff40_4040, 1.0);
+
+    // The FPS trace (green).
+    let pt = |i: usize| -> ImVec2 {
+        let fx = i as f32 / (n - 1) as f32;
+        let fy = (buf[i] / peak).clamp(0.0, 1.0);
+        ImVec2 { x: x0 + fx * w, y: y0 + h - fy * h }
+    };
+    for i in 1..n {
+        let a = pt(i - 1);
+        let b = pt(i);
+        add_line(dl, &a, &b, 0xff5c_c85c, 1.5);
+    }
+}
+
+/// A separate window listing every keyframe with its captured coordinates, so the
+/// timeline dots are legible. Toggled from the Timeline section.
+unsafe fn draw_keyframe_window() {
+    let begin: BeginFn = core::mem::transmute(base() + IMGUI_BEGIN);
+    let end: EndFn = core::mem::transmute(base() + IMGUI_END);
+    let text: TextFn = core::mem::transmute(base() + IMGUI_TEXT);
+
+    let mut open = true;
+    if begin(b"Keyframes\0".as_ptr() as *const c_char, &mut open as *mut bool, 0) {
+        let kfs = crate::paths::keyframes();
+        if kfs.is_empty() {
+            text(
+                b"%s\0".as_ptr() as *const c_char,
+                b"No keyframes yet - use Add Keyframe.\0".as_ptr() as *const c_char,
+            );
+        } else {
+            for (i, k) in kfs.iter().enumerate() {
+                if let Ok(t) = std::ffi::CString::new(format!(
+                    "#{:<2}  pos ({:.0}, {:.0}, {:.0})   yaw {:.0}  pitch {:.0}   fov {:.0}",
+                    i + 1,
+                    k.0,
+                    k.1,
+                    k.2,
+                    k.4,
+                    k.3,
+                    k.6
+                )) {
+                    text(b"%s\0".as_ptr() as *const c_char, t.as_ptr());
+                }
+            }
+        }
+    }
+    end();
+    // Reflect the window's own close button back into our toggle.
+    if !open {
+        SHOW_KF.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Draw the keyframe track: a bar, a dot per keyframe, and the playhead line.
@@ -386,9 +697,12 @@ unsafe fn draw_timeline() {
         return;
     }
 
-    // Reserve the track area so following widgets do not overlap it.
+    // Reserve the track area so following widgets do not overlap it. Span the full content
+    // width: content-region max x (window+0x250) minus the cursor x.
     let origin = *((win + IMGUI_WIN_CURSOR_POS) as *const ImVec2);
-    let size = ImVec2 { x: 320.0, y: 46.0 };
+    let content_max_x = *((win + IMGUI_WIN_CONTENT_MAX_X) as *const f32);
+    let avail = (content_max_x - origin.x).max(64.0);
+    let size = ImVec2 { x: avail, y: 46.0 };
     inv(b"##timeline\0".as_ptr() as *const c_char, &size, 0);
 
     let x0 = origin.x + 4.0;

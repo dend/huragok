@@ -48,10 +48,24 @@ unsafe extern "system" fn pc_detour(self_: *mut u8, func: *mut u8, parms: *mut c
             }
             IN_DRAIN.with(|d| d.set(false));
         }
-        // Refresh live stats on the game thread, throttled (ProcessEvent fires often).
-        if STAT_TICK.fetch_add(1, Ordering::Relaxed) % 64 == 0 {
+        // Console input lines (typed into the log console) run as console commands.
+        let lines = crate::console::take_all();
+        if !lines.is_empty() {
+            IN_DRAIN.with(|d| d.set(true));
+            for line in lines {
+                crate::pawn::run_console_line(self_, &line);
+            }
+            IN_DRAIN.with(|d| d.set(false));
+        }
+        // Refresh live stats / campaign readout on the game thread, throttled (ProcessEvent
+        // fires often). Campaign changes rarely, so refresh it less frequently.
+        let t = STAT_TICK.fetch_add(1, Ordering::Relaxed);
+        if t % 64 == 0 {
             IN_DRAIN.with(|d| d.set(true));
             crate::stats::refresh(self_);
+            if t % 256 == 0 {
+                crate::campaign::refresh(self_);
+            }
             IN_DRAIN.with(|d| d.set(false));
         }
     }

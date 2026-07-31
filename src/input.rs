@@ -10,6 +10,7 @@ use crate::state::cam;
 
 // Virtual-key codes (raw, so we don't juggle VIRTUAL_KEY <-> i32).
 const VK_INSERT: i32 = 0x2D;
+const VK_CONTROL: i32 = 0x11; // either Ctrl - the hotkey modifier
 const VK_SPACE: i32 = 0x20;
 const VK_LSHIFT: i32 = 0xA0;
 const VK_RSHIFT: i32 = 0xA1;
@@ -57,46 +58,55 @@ pub fn held(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
 
+/// A Ctrl-modified hotkey: rising edge of `vk` while Ctrl is held. `edge(vk)` is evaluated
+/// FIRST so the key's "pressed-since-last-check" bit is consumed every frame - otherwise a
+/// bare keypress would stay pending and fire the moment Ctrl is later pressed. Only a fresh
+/// key edge with Ctrl currently held counts.
+pub fn combo(vk: i32) -> bool {
+    edge(vk) && held(VK_CONTROL)
+}
+
 /// Poll non-camera hotkeys that push commands to the game thread. Call ~60 Hz.
+/// Every hotkey here is Ctrl+key so it cannot trigger while typing.
 pub fn poll_hotkeys() {
     use crate::cmd::{push, Cmd};
-    if edge(K_B) {
-        crate::hooks::imgui::toggle();
+    if combo(K_B) {
+        crate::hooks::imgui::toggle(); // Ctrl+B: panel
     }
-    if edge(K_P) {
-        push(Cmd::Pause);
+    if combo(K_P) {
+        push(Cmd::Pause); // Ctrl+P
     }
-    if edge(K_I) {
-        push(Cmd::ImguiInput);
+    if combo(K_I) {
+        push(Cmd::ImguiInput); // Ctrl+I: cursor / ImGui input
     }
-    if edge(VK_HOME) {
+    if combo(VK_HOME) {
         push(Cmd::CineOn);
     }
-    if edge(VK_END) {
+    if combo(VK_END) {
         push(Cmd::CineOff);
     }
-    if edge(VK_F5) {
+    if combo(VK_F5) {
         push(Cmd::FadeOut);
     }
-    if edge(VK_F6) {
+    if combo(VK_F6) {
         push(Cmd::FadeIn);
     }
-    if edge(VK_OEM_COMMA) {
+    if combo(VK_OEM_COMMA) {
         push(Cmd::Slomo((crate::pawn::time_dilation() - 0.1).max(0.05)));
     }
-    if edge(VK_OEM_PERIOD) {
+    if combo(VK_OEM_PERIOD) {
         push(Cmd::Slomo((crate::pawn::time_dilation() + 0.1).min(4.0)));
     }
-    if edge(VK_OEM_2) {
+    if combo(VK_OEM_2) {
         push(Cmd::Slomo(1.0));
     }
-    if edge(K_K) {
+    if combo(K_K) {
         crate::paths::add();
     }
-    if edge(K_J) {
+    if combo(K_J) {
         crate::paths::toggle_play();
     }
-    if edge(K_L) {
+    if combo(K_L) {
         crate::paths::clear();
     }
 }
@@ -115,7 +125,7 @@ pub fn poll_freecam() {
         // TODO(port): CMD_FREEZE / CMD_UNFREEZE so WASD stops driving the pawn too.
     }
 
-    if edge(K_M) {
+    if combo(K_M) {
         let mut s = cam();
         s.mouse = !s.mouse;
         let on = s.mouse;
@@ -158,8 +168,8 @@ pub fn poll_freecam() {
     if held(K_E) || held(VK_SPACE) {
         s.z += spd;
     }
-    if held(K_Q) || held(VK_LCTRL) || held(VK_RCTRL) {
-        s.z -= spd;
+    if held(K_Q) {
+        s.z -= spd; // Ctrl is reserved for hotkey combos now, so descend is Q only
     }
     if held(VK_UP) {
         s.pitch = (s.pitch + look).min(89.0);

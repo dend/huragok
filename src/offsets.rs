@@ -9,6 +9,7 @@
 // ---------------- data globals (module base + RVA) ----------------
 pub const GUOBJECTARRAY: usize = 0x0d0b_1770; // was 0x0d0b8770; .data shifted -0x7000
 pub const FNAMEPOOL: usize = 0x0d40_ed80; //     was 0x0d415d80; same -0x7000 shift
+pub const GAVERAGEFPS: usize = 0x0d55_0f94; // UE's GAverageFPS global (the `%5.2f FPS` value)
 
 // ---------------- native functions (module base + RVA) ----------------
 pub const PROCESSEVENT_SLOT: usize = 79; // UObject::ProcessEvent vtable slot (index, patch-proof)
@@ -33,6 +34,14 @@ pub const IMGUI_INVISIBLE_BUTTON: usize = 0x0731_1ae0; // InvisibleButton(id, Im
 pub const IMGUI_DRAW_ADD_LINE: usize = 0x0730_79e0; // ImDrawList::AddLine(this, p1*, p2*, col, thick)
 pub const IMGUI_DRAW_ADD_RECT_FILLED: usize = 0x0730_7c20; // AddRectFilled(this, min*, max*, col, round, flags)
 pub const IMGUI_DRAW_ADD_CIRCLE_FILLED: usize = 0x0730_8180; // AddCircleFilled(this, center*, r, col, segs)
+pub const IMGUI_INPUT_TEXT: usize = 0x0731_b270; // InputText(label, buf, buf_size, flags, cb, ud) -> bool
+pub const IMGUI_BEGIN_CHILD: usize = 0x0072_bfbe0; // BeginChild(str_id, &size, border(0/1), flags) -> bool
+pub const IMGUI_END_CHILD: usize = 0x0072_bfc40; // EndChild()
+pub const IMGUI_SET_SCROLL_HERE_Y: usize = 0x0072_cb3a0; // SetScrollHereY(ratio) - pass 1.0 for bottom
+// ImGuiWindow field offsets (from the current-window pointer at ctx+0x3ed8).
+pub const IMGUI_WIN_SCROLL_Y: usize = 0x88; // window.Scroll.y
+pub const IMGUI_WIN_SCROLLMAX_Y: usize = 0x90; // window.ScrollMax.y
+pub const IMGUI_WIN_CONTENT_MAX_X: usize = 0x250; // window.ContentRegionRect.Max.x
 // Inlined ImGui accessors (no exported fn): resolve via these offsets.
 pub const GIMGUI_PTR: usize = 0x0d56_a008; // *ImGuiContext global (verified via RIP-relative loads)
 pub const IMGUI_CTX_CURRENT_WINDOW: usize = 0x3ed8; // ImGuiContext.CurrentWindow

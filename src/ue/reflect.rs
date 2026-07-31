@@ -128,6 +128,32 @@ pub fn find_function(mut cls: *mut u8, fname: &str) -> *mut u8 {
     core::ptr::null_mut()
 }
 
+/// Resolve a reflected property's byte offset within instances of `cls` (walks the
+/// `ChildProperties` FField list up the class chain). Layout confirmed by a runtime dump
+/// on this build: UStruct.ChildProperties at 0x50; FField.Next at 0x18, FField.NamePrivate
+/// at 0x20; FProperty.Offset_Internal at 0x44. Returns `None` if not found.
+pub fn property_offset(mut cls: *mut u8, name: &str) -> Option<i32> {
+    unsafe {
+        for _ in 0..64 {
+            if cls.is_null() {
+                break;
+            }
+            let mut field = *((cls as usize + 0x50) as *const *mut u8);
+            let mut steps = 0;
+            while !field.is_null() && steps < 8192 {
+                let id = *((field as usize + 0x20) as *const u32);
+                if super::fname::name_by_id(id) == name {
+                    return Some(*((field as usize + 0x44) as *const i32));
+                }
+                field = *((field as usize + 0x18) as *const *mut u8);
+                steps += 1;
+            }
+            cls = super_of(cls);
+        }
+    }
+    None
+}
+
 /// Find a live (non-CDO, non-archetype) UClass whose name contains `want`.
 pub fn find_class(want: &str) -> *mut u8 {
     let n = num_elements();
