@@ -1,4 +1,11 @@
-# Huragok
+<h1 align="center">Huragok</h1>
+
+<p align="center">
+  <a href="https://github.com/dend/huragok/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/dend/huragok/build.yml?branch=main"></a>
+  <a href="https://github.com/dend/huragok/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/dend/huragok?sort=semver"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/dend/huragok"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue">
+</p>
 
 Huragok is a single-player toolbox for Halo: Campaign Evolved. It adds a free-flying
 camera, an in-game control panel, skull toggles, time controls, and a keyframe system
@@ -9,7 +16,9 @@ path for a clip.
 It runs as a mod that loads while the game is running. Nothing on disk is patched and
 the game's own files are left alone.
 
-Named after the Engineers from Halo, who take technology apart and put it back together.
+> [!NOTE]
+> Named after the [Huragok](https://www.halopedia.org/Huragok) (the Engineers) from
+> Halo, who take technology apart and put it back together.
 
 <img width="3838" height="2159" alt="ImGui" src="https://github.com/user-attachments/assets/bb489b69-0de9-4c1c-bef7-dd07f768f594" />
 
