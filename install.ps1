@@ -29,20 +29,48 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
-function Write-Step($message) { Write-Host "==> $message" -ForegroundColor Cyan }
-
-# --- files this script installs -------------------------------------------
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$modDll = Join-Path $scriptDir 'huragok.dll'
-if (-not (Test-Path $modDll)) {
-    throw "huragok.dll is not next to this script ($scriptDir). Run install.ps1 from the folder you extracted the release into."
+# --- Presentation ---------------------------------------------------------
+$Glyph = @{
+    Check = [char]0x2713  # check mark
+    Cross = [char]0x2717  # cross
+    Arrow = [char]0x2192  # arrow
 }
-if (-not (Test-Path $DwmapiPath)) {
-    throw "No dwmapi.dll at '$DwmapiPath'. Pass -DwmapiPath to point at one."
+$Rule = [string]([char]0x2500) * 54
+
+function Write-Header {
+    Write-Host ''
+    Write-Host '  Huragok' -ForegroundColor Cyan -NoNewline
+    Write-Host '  Installer' -ForegroundColor DarkGray
+    Write-Host '  Gameplay toolbox for Halo: Campaign Evolved' -ForegroundColor DarkGray
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+    Write-Host ''
 }
 
-# --- find the game --------------------------------------------------------
+function Write-Task($Message) {
+    Write-Host '  ' -NoNewline
+    Write-Host $Glyph.Arrow -ForegroundColor Cyan -NoNewline
+    Write-Host "  $Message" -ForegroundColor Gray
+}
+
+function Write-Done($Label, $Detail) {
+    Write-Host '  ' -NoNewline
+    Write-Host $Glyph.Check -ForegroundColor Green -NoNewline
+    Write-Host '  ' -NoNewline
+    Write-Host $Label.PadRight(9) -ForegroundColor Gray -NoNewline
+    Write-Host $Detail -ForegroundColor DarkGray
+}
+
+function Write-Failure($Message) {
+    Write-Host ''
+    Write-Host '  ' -NoNewline
+    Write-Host $Glyph.Cross -ForegroundColor Red -NoNewline
+    Write-Host "  $Message" -ForegroundColor Red
+    Write-Host ''
+}
+
+# --- Steam discovery ------------------------------------------------------
 function Get-SteamRoot {
     foreach ($key in 'HKCU:\Software\Valve\Steam', 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam', 'HKLM:\SOFTWARE\Valve\Steam') {
         try {
@@ -53,9 +81,9 @@ function Get-SteamRoot {
     return $null
 }
 
-function Get-SteamLibraries($steamRoot) {
-    $libraries = @($steamRoot)
-    $vdf = Join-Path $steamRoot 'steamapps\libraryfolders.vdf'
+function Get-SteamLibraries($SteamRoot) {
+    $libraries = @($SteamRoot)
+    $vdf = Join-Path $SteamRoot 'steamapps\libraryfolders.vdf'
     if (Test-Path $vdf) {
         foreach ($line in Get-Content $vdf) {
             if ($line -match '"path"\s+"([^"]+)"') {
@@ -81,35 +109,60 @@ function Find-GamePath {
     return $null
 }
 
-if (-not $GamePath) {
-    Write-Step 'Looking for Halo: Campaign Evolved in your Steam libraries'
-    $GamePath = Find-GamePath
+# --- Install --------------------------------------------------------------
+Write-Header
+
+try {
+    # The mod DLL ships next to this script.
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    $modDll = Join-Path $scriptDir 'huragok.dll'
+    if (-not (Test-Path $modDll)) {
+        throw "Huragok.dll is not next to this script. Run install.ps1 from the folder you extracted the release into."
+    }
+    if (-not (Test-Path $DwmapiPath)) {
+        throw "No dwmapi.dll at '$DwmapiPath'. Pass -DwmapiPath to point at one."
+    }
+
+    if (-not $GamePath) {
+        Write-Task 'Searching your Steam libraries for the game'
+        $GamePath = Find-GamePath
+    }
+    if (-not $GamePath) {
+        throw "Could not find the game automatically. Re-run with -GamePath pointing at the folder that contains Meteorite."
+    }
+
+    $win64 = Join-Path $GamePath 'Meteorite\Binaries\Win64'
+    if (-not (Test-Path $win64)) {
+        throw "'$win64' does not exist. Point -GamePath at the game's install folder (the one that contains Meteorite)."
+    }
+    Write-Done 'Game' $win64
+
+    # Copy Windows' own dwmapi.dll in as the proxy the mod loads through.
+    $proxyDest = Join-Path $win64 'dwmapi.dll'
+    Copy-Item -Path $DwmapiPath -Destination $proxyDest -Force
+    Write-Done 'Proxy' $proxyDest
+
+    # Drop the mod into the mods folder, creating it if needed.
+    $modsDir = Join-Path $win64 'mods'
+    if (-not (Test-Path $modsDir)) {
+        New-Item -ItemType Directory -Path $modsDir | Out-Null
+    }
+    $modDest = Join-Path $modsDir 'huragok.dll'
+    Copy-Item -Path $modDll -Destination $modDest -Force
+    Write-Done 'Mod' $modDest
+
+    Write-Host ''
+    Write-Host "  $Rule" -ForegroundColor DarkGray
+    Write-Host '  ' -NoNewline
+    Write-Host $Glyph.Check -ForegroundColor Green -NoNewline
+    Write-Host '  Installation complete' -ForegroundColor Green
+    Write-Host ''
+    Write-Host '  Launch the game, load a mission, and press ' -ForegroundColor Gray -NoNewline
+    Write-Host 'Ctrl+B' -ForegroundColor White -NoNewline
+    Write-Host ' to open the panel.' -ForegroundColor Gray
+    Write-Host ''
 }
-if (-not $GamePath) {
-    throw "Could not find the game automatically. Re-run with -GamePath pointing at the folder that contains Meteorite."
+catch {
+    Write-Failure $_.Exception.Message
+    exit 1
 }
-
-$win64 = Join-Path $GamePath 'Meteorite\Binaries\Win64'
-if (-not (Test-Path $win64)) {
-    throw "'$win64' does not exist. Point -GamePath at the game's install folder (the one that contains Meteorite)."
-}
-
-# --- install --------------------------------------------------------------
-Write-Step "Game folder: $win64"
-
-$proxyDest = Join-Path $win64 'dwmapi.dll'
-Write-Step "Copying the proxy to $proxyDest"
-Copy-Item -Path $DwmapiPath -Destination $proxyDest -Force
-
-$modsDir = Join-Path $win64 'mods'
-if (-not (Test-Path $modsDir)) {
-    Write-Step "Creating $modsDir"
-    New-Item -ItemType Directory -Path $modsDir | Out-Null
-}
-
-$modDest = Join-Path $modsDir 'huragok.dll'
-Write-Step "Copying huragok.dll to $modDest"
-Copy-Item -Path $modDll -Destination $modDest -Force
-
-Write-Host ''
-Write-Host 'Done. Launch the game, load a mission, and press Ctrl+B to open the panel.' -ForegroundColor Green

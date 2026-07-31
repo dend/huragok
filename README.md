@@ -47,9 +47,10 @@ the game's own files are left alone.
 3. Start the game and load a mission. Press `INSERT` to detach the camera, or `Ctrl+B`
    to open the panel.
 
-If you would rather not run a script you have not read, the installer is short and
-plain to follow: read [`install.ps1`](https://github.com/dend/huragok/blob/main/install.ps1),
-then run it as is or adjust it to fit your setup.
+> [!NOTE]
+> If you would rather not run a script you have not read, the installer is short and
+> plain to follow: read [`install.ps1`](https://github.com/dend/huragok/blob/main/install.ps1),
+> then run it as is or adjust it to fit your setup.
 
 ### Manual install
 
