@@ -60,8 +60,13 @@ static HOOKED: AtomicBool = AtomicBool::new(false);
 static PANEL: AtomicBool = AtomicBool::new(false);
 static SHOW_KF: AtomicBool = AtomicBool::new(false); // keyframe list window open
 static SHOW_CONSOLE: AtomicBool = AtomicBool::new(false); // ImGui console window open
-static FLASHLIGHT: AtomicBool = AtomicBool::new(false); // flashlight checkbox state
 static INVULN: AtomicBool = AtomicBool::new(false); // invulnerability checkbox state
+// On/off toggles whose state we track ourselves (the game does not report it back).
+static HIDE_BODY: AtomicBool = AtomicBool::new(false);
+static CAMO_FX: AtomicBool = AtomicBool::new(false);
+static OVERSHIELD: AtomicBool = AtomicBool::new(false);
+static CINEMATIC: AtomicBool = AtomicBool::new(false);
+static SIM_FROZEN: AtomicBool = AtomicBool::new(false);
 static FAULTED_WIDGETS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 // Input buffer for the ImGui console box. Only touched on the ImGui draw thread.
@@ -223,6 +228,21 @@ unsafe fn draw_panel() {
             }
         };
     }
+    // A checkbox backed by a tracked AtomicBool that pushes $on when checked, $off when
+    // cleared. For features that are conceptually on/off but drive two separate commands.
+    macro_rules! toggle {
+        ($label:expr, $state:expr, $on:expr, $off:expr) => {{
+            let mut v = $state.load(Ordering::Relaxed);
+            let mut ch = false;
+            guarded("toggle", || {
+                ch = checkbox($label.as_ptr() as *const c_char, &mut v)
+            });
+            if ch {
+                $state.store(v, Ordering::Relaxed);
+                push(if v { $on } else { $off });
+            }
+        }};
+    }
 
     if !begin(b"Huragok\0".as_ptr() as *const c_char, core::ptr::null_mut(), 0) {
         end();
@@ -341,20 +361,10 @@ unsafe fn draw_panel() {
             c.fov = 90.0;
             c.fov_locked = false;
         }
-        if btn!(b"Cinematic ON (hide HUD/player)\0") {
-            push(Cmd::CineOn);
-        }
-        if btn!(b"Cinematic OFF\0") {
-            push(Cmd::CineOff);
-        }
+        toggle!(b"Cinematic (hide HUD/player)\0", CINEMATIC, Cmd::CineOn, Cmd::CineOff);
+        toggle!(b"Freeze sim (Blam)\0", SIM_FROZEN, Cmd::SimFreeze, Cmd::SimUnfreeze);
         if btn!(b"Pause toggle\0") {
             push(Cmd::Pause);
-        }
-        if btn!(b"Freeze sim (Blam)\0") {
-            push(Cmd::SimFreeze);
-        }
-        if btn!(b"Resume sim (Blam)\0") {
-            push(Cmd::SimUnfreeze);
         }
         if btn!(b"Diag: time timer\0") {
             push(Cmd::DiagTime);
@@ -383,60 +393,15 @@ unsafe fn draw_panel() {
 
     // ---- Character / Pawn ----
     if header!(b"Character / Pawn\0", 0) {
-        if btn!(b"Hide body\0") {
-            push(Cmd::PawnHide);
-        }
-        if btn!(b"Show body\0") {
-            push(Cmd::PawnShow);
-        }
-        if btn!(b"Collision OFF\0") {
-            push(Cmd::PawnNoCol);
-        }
-        if btn!(b"Collision ON\0") {
-            push(Cmd::PawnCol);
-        }
-        if btn!(b"Giant\0") {
-            push(Cmd::ScaleGiant);
-        }
-        if btn!(b"Tiny\0") {
-            push(Cmd::ScaleTiny);
-        }
-        if btn!(b"Normal size\0") {
-            push(Cmd::ScaleNormal);
-        }
-        if btn!(b"Teleport to camera\0") {
-            push(Cmd::Teleport);
-        }
-        // Flashlight checkbox (off may be a no-op on this build - it is enable-latched like
-        // the skulls). Third/first-person are managed by the Third Person skull.
-        let mut fl = FLASHLIGHT.load(Ordering::Relaxed);
-        let mut ch = false;
-        guarded("flashlight", || {
-            ch = checkbox(b"Flashlight\0".as_ptr() as *const c_char, &mut fl)
-        });
-        if ch {
-            FLASHLIGHT.store(fl, Ordering::Relaxed);
-            crate::console::submit(format!(
-                "hs:unit_set_integrated_flashlight (player0) {}",
-                if fl { "true" } else { "false" }
-            ));
-        }
+        toggle!(b"Hide body\0", HIDE_BODY, Cmd::PawnHide, Cmd::PawnShow);
+        // Flashlight off is unsolved (the visible beam is a volumetric cone, not the light
+        // component). Tracked in issue #1; control removed until it works.
     }
 
     // ---- Pawn FX ----
     if header!(b"Pawn FX\0", 0) {
-        if btn!(b"Active Camo ON\0") {
-            push(Cmd::CamoOn);
-        }
-        if btn!(b"Active Camo OFF\0") {
-            push(Cmd::CamoOff);
-        }
-        if btn!(b"Overshield ON\0") {
-            push(Cmd::OvershieldOn);
-        }
-        if btn!(b"Overshield OFF\0") {
-            push(Cmd::OvershieldOff);
-        }
+        toggle!(b"Active camo\0", CAMO_FX, Cmd::CamoOn, Cmd::CamoOff);
+        toggle!(b"Overshield\0", OVERSHIELD, Cmd::OvershieldOn, Cmd::OvershieldOff);
         if btn!(b"Shield-break FX\0") {
             push(Cmd::ShieldBreak);
         }

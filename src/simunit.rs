@@ -86,8 +86,7 @@ pub fn set_oneshot(on: bool) {
 }
 
 /// Per-frame maintenance on the game thread: re-assert invulnerability so the sim cannot
-/// clear it, and (when enabled) finish off any unit the player has damaged. Cheap no-op
-/// while both cheats are off. Call from the game-thread frame hook.
+/// clear it. Cheap no-op while off. Call from the game-thread frame hook.
 pub fn tick() {
     if !INVULN.load(Ordering::Relaxed) && !ONESHOT.load(Ordering::Relaxed) {
         return;
