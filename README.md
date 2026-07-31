@@ -1,76 +1,98 @@
 # Huragok
 
-A Dear ImGui control panel injected into Halo: Campaign Evolved (UE 5.5.4). It loads
-through a dwmapi proxy and puts single-player camera and gameplay controls behind an
-in-game panel: a free-flying camera, FOV, and a handful of pawn tweaks.
+Huragok is a single-player toolbox for Halo: Campaign Evolved. It adds a free-flying
+camera, an in-game control panel, skull toggles, time controls, and a keyframe system
+for camera shots, all from inside the running game. Point it at a mission and you can
+fly around a firefight, slow it down, flip skulls on and off, or set up a moving camera
+path for a clip.
 
-Named after the Engineers from Halo, whose whole job is to take technology apart and
-put it back together.
+It runs as a mod that loads while the game is running. Nothing on disk is patched and
+the game's own files are left alone.
+
+Named after the Engineers from Halo, who take technology apart and put it back together.
 
 <img width="3838" height="2159" alt="ImGui" src="https://github.com/user-attachments/assets/bb489b69-0de9-4c1c-bef7-dd07f768f594" />
 
-## How it loads
+## What you can do
 
-![How Huragok loads](docs/how-it-loads.svg)
+- Fly a free camera anywhere in the level, with adjustable speed and field of view
+- Slow down or speed up time, or pause on a frame
+- Turn skulls on and off from a checklist, including third-person and night vision
+- Record camera keyframes and play back a smooth moving shot
+- Read live mission info: current mission, difficulty, checkpoint, and framerate
 
-## Building
+## Install
 
-You need the Rust toolchain (MSVC) and the Visual Studio C++ build tools. `build.rs`
-uses the latter to compile the small SEH shim in `csrc/`.
+1. Download `huragok-<version>.zip` from the
+   [latest release](https://github.com/dend/huragok/releases/latest) and extract it
+   anywhere.
+2. Right-click `install.ps1` and run it with PowerShell, or from a PowerShell window:
+   ```powershell
+   .\install.ps1
+   ```
+   It finds your Steam copy of the game, sets up the proxy it loads through, and copies
+   the mod in. If your game is not on Steam, point it at the install folder:
+   ```powershell
+   .\install.ps1 -GamePath "D:\Games\Halo Campaign Evolved"
+   ```
+3. Start the game and load a mission. Press `INSERT` to detach the camera, or `Ctrl+B`
+   to open the panel.
+
+If you would rather not run a script you have not read, the installer is short and
+plain to follow: read [`install.ps1`](https://github.com/dend/huragok/blob/main/install.ps1),
+then run it as is or adjust it to fit your setup.
+
+### Manual install
+
+The mod loads through a `dwmapi.dll` proxy that side-loads anything in a `mods` folder
+next to the game. To set it up by hand:
+
+1. Copy Windows' own `dwmapi.dll` (from `C:\Windows\System32\`) into the game's binaries
+   folder:
+   ```
+   ...\Halo Campaign Evolved\Meteorite\Binaries\Win64\
+   ```
+2. In that same folder, create a `mods` folder if there isn't one, and copy `huragok.dll`
+   into it.
+3. Launch the game.
+
+## Controls
+
+The camera and hotkeys are always live. Every command shortcut is `Ctrl` plus a key, so
+nothing fires by accident while you type in the console.
+
+Free camera:
+
+- `INSERT` toggle the free camera
+- `W` `A` `S` `D` move, `Space` or `E` up, `Q` down
+- `Shift` move faster
+- Arrow keys aim, or `Ctrl+M` to steer with the mouse
+- `[` and `]` field of view
+- `Z` `C` roll, `X` reset roll
+
+Panel and commands:
+
+- `Ctrl+B` open or close the panel
+- `Ctrl+I` hand the mouse to the panel so you can click its controls
+- `Ctrl+P` pause
+- `Ctrl+,` and `Ctrl+.` slow down or speed up time, `Ctrl+/` back to normal
+- `Ctrl+Home` / `Ctrl+End` cinematic bars on or off
+- `Ctrl+F5` / `Ctrl+F6` fade out or in
+- `Ctrl+K` add a camera keyframe, `Ctrl+J` play or stop the path, `Ctrl+L` clear it
+
+Skulls, time, the console, and the mission readout all live inside the panel.
+
+## Build it yourself
+
+You need the Rust toolchain (MSVC) and the Visual Studio C++ build tools. Then:
 
 ```powershell
 cargo build --release
 ```
 
-That produces `target\release\huragok.dll`. Drop it in the game's mod folder:
+The DLL lands at `target\release\huragok.dll`. Every push builds the same file on
+GitHub Actions, so you can download it from a workflow run instead of building locally.
 
-```
-...\Halo Campaign Evolved\Meteorite\Binaries\Win64\mods\huragok.dll
-```
+## License
 
-Diagnostics go to a console window and to `huragok_log.txt` next to the game executable.
-
-## Controls
-
-`INSERT` toggles the free-cam. `WASD` plus `Space`/`Ctrl` fly, `Shift` goes faster,
-mouse or arrow keys look, `Z`/`C`/`X` roll, `[` and `]` change FOV. `B` opens the
-panel, where everything else lives. `K` adds a keyframe, `J` plays or stops the path,
-`L` clears it.
-
-## Layout
-
-| Path | What it does |
-|------|------|
-| `src/lib.rs` | `DllMain` and the worker-thread bootstrap |
-| `src/mem.rs` | module base, `base+RVA`, page patching |
-| `src/offsets.rs` | RVAs and struct offsets for the current build |
-| `src/seh.rs`, `csrc/seh.c` | `__try/__except` fault guard for reflected calls |
-| `src/log.rs` | colorized console and `huragok_log.txt` (the `rep!` macro) |
-| `src/input.rs` | keyboard polling and free-cam movement |
-| `src/cmd.rs` | the command queue |
-| `src/pawn.rs` | command executor: cheats, pawn FX, third-person body, scale, time |
-| `src/paths.rs` | keyframe camera paths (Catmull-Rom) |
-| `src/state.rs` | shared camera and toggle state |
-| `src/hooks/` | camera, PlayerController, and ImGui hooks |
-| `src/ue/` | UE reflection: `fname`, `object`, `reflect`, `process_event` |
-
-## Features
-
-| Component | Status |
-|------|------|
-| Free-cam (fly, look, roll, FOV) | Working |
-| FOV override | Working |
-| ImGui control panel | Working |
-| Command queue and PlayerController hook | Untested |
-| Cinematic mode and pause | Untested |
-| Time dilation | Not working |
-| Cheats (ghost, fly, god) | Not working |
-| Pawn hide, collision, freeze | Untested |
-| Scale (giant, tiny) | Untested |
-| Third-person body | Untested |
-| Pawn FX (camo, overshield, blood) | Untested |
-| Keyframe camera paths | Untested |
-| Live stats overlay | Planned |
-| Keyframe timeline UI | Planned |
-| Multi-window layout and charts | Planned |
-| Console fixed input line | Planned |
+MIT. See [LICENSE](LICENSE).
