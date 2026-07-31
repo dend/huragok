@@ -171,7 +171,8 @@ unsafe fn alloc_debug_console() {
 pub fn banner() {
     let rule = format!("  {DIM}{}{RESET}\n", "\u{2500}".repeat(30));
     con_write(&format!(
-        "\n  {BOLD}{ACCENT}\u{25CF}{RESET} {BOLD}Huragok{RESET} {DIM}- in-game hook engine  (build {}){RESET}\n",
+        "\n  {BOLD}{ACCENT}\u{25CF}{RESET} {BOLD}Huragok{RESET} {DIM}- in-game hook engine  (v{}, build {}){RESET}\n",
+        env!("CARGO_PKG_VERSION"),
         env!("HURAGOK_BUILD")
     ));
     con_write(&rule);
@@ -180,7 +181,8 @@ pub fn banner() {
     ));
     // Also surface a line in the in-game ImGui console (the only log surface by default).
     emit(&format!(
-        "[huragok] ready (build {}) - open the panel with Ctrl+B",
+        "[huragok] ready (v{}, build {}) - open the panel with Ctrl+B",
+        env!("CARGO_PKG_VERSION"),
         env!("HURAGOK_BUILD")
     ));
 }

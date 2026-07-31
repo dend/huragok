@@ -34,4 +34,15 @@ fn main() {
     println!("cargo:rustc-env=HURAGOK_BUILD={version}");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
+
+    // VERSIONINFO resource: FileVersion/ProductVersion come from CARGO_PKG_VERSION,
+    // so Cargo.toml is the single source of truth for the release version.
+    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let mut res = winresource::WindowsResource::new();
+    res.set("ProductName", "Huragok");
+    res.set("FileDescription", "Huragok in-process gameplay customization engine");
+    res.set("OriginalFilename", "huragok.dll");
+    res.set("InternalName", "huragok");
+    res.set("ProductVersion", &format!("{pkg_version}+{version}"));
+    res.compile().expect("failed to embed VERSIONINFO resource");
 }

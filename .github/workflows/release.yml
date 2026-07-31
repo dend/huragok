@@ -31,6 +31,10 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+$') {
             throw "Tag '$version' does not look like <major>.<minor>.<patch>."
           }
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($cargoVersion -ne $version) {
+            throw "Tag '$version' does not match Cargo.toml version '$cargoVersion'. The DLL embeds the Cargo.toml version, so they must agree."
+          }
           "HURAGOK_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build

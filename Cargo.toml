@@ -1,6 +1,6 @@
 [package]
 name = "huragok"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 description = "In-process gameplay customization engine and control panel"
 license = "MIT"
@@ -35,6 +35,9 @@ windows-sys = { version = "0.59", features = [
 # Compiles the tiny SEH (__try/__except) shim in csrc/ so we can fault-guard
 # risky reflected calls the same way the C++ engine did.
 cc = "1.2"
+# Embeds the VERSIONINFO resource so the DLL carries the crate version in its
+# file properties (Explorer, Task Manager, crash dumps).
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3
