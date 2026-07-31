@@ -295,6 +295,8 @@ pub fn execute(pc: *mut u8, c: Cmd) {
                 }
                 set_nv_postprocess(pc, on);
             }
+            Cmd::Invuln(on) => crate::simunit::set_invuln(on),
+            Cmd::OneShot(on) => crate::simunit::set_oneshot(on),
             Cmd::FadeOut => camera_fade(true),
             Cmd::FadeIn => camera_fade(false),
         }

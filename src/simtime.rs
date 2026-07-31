@@ -190,6 +190,164 @@ pub fn game_globals() -> usize {
     found
 }
 
+// ---- Local player's Blam unit object-body pointer (for direct sim cheats) ----
+// Chain (offsets into the sim thread's TLS block, then the object table), recovered by
+// static RE and cross-checked against `unit_get_health`:
+//   pcg          = *(tls + 0x118)                    ; player-control globals
+//   player_h     = *(u32*)(pcg + 0xB8)               ; local player 0 handle (0xFFFFFFFF = none)
+//   players_base = *(*(tls + 0x30) + 0x50)
+//   unit_h       = *(u32*)(players_base + (player_h & 0xFFFF)*0x4B0 + 0x28)  ; (0xFFFFFFFF = none)
+//   object_table = *(*(tls + 0x20) + 0x50)
+//   U            = *(object_table + (unit_h & 0xFFFF)*0x18 + 0x10)           ; the object body
+const PCG_TLS_SLOT: usize = 0x118;
+const PLAYERS_TLS_SLOT: usize = 0x30;
+const OBJTABLE_TLS_SLOT: usize = 0x20;
+const PCG_LOCAL0_HANDLE: usize = 0xb8;
+const PLAYERS_TABLE_OFF: usize = 0x50;
+const S_PLAYER_STRIDE: usize = 0x4b0;
+const S_PLAYER_UNIT_HANDLE: usize = 0x28;
+const OBJTABLE_BASE_OFF: usize = 0x50;
+const OBJ_RECORD_STRIDE: usize = 0x18;
+const OBJ_RECORD_BODY: usize = 0x10;
+
+static SIM_TLS_BLOCK: AtomicUsize = AtomicUsize::new(0);
+static SCAN_TICK_TLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the sim DLL's TLS block pointer for one thread (0 if it has none).
+unsafe fn read_thread_tls_block(tid: u32, idx: usize, nt: NtQitFn) -> usize {
+    let h = OpenThread(THREAD_QUERY_INFORMATION, 0, tid);
+    if h.is_null() {
+        return 0;
+    }
+    let mut tbi = [0u8; 48];
+    let st = nt(h, 0, tbi.as_mut_ptr() as *mut c_void, 48, core::ptr::null_mut());
+    CloseHandle(h);
+    if st != 0 {
+        return 0;
+    }
+    let teb = *(tbi.as_ptr().add(8) as *const usize);
+    if teb == 0 {
+        return 0;
+    }
+    let mut block = 0usize;
+    crate::seh::guard(|| {
+        let tls_ptr = *((teb + TEB_TLS_POINTER) as *const usize);
+        if tls_ptr != 0 {
+            block = *((tls_ptr + idx * 8) as *const usize);
+        }
+    });
+    block
+}
+
+/// True if this TLS block belongs to the sim thread (its game-globals slot resolves).
+fn is_sim_tls_block(block: usize) -> bool {
+    if block < 0x1_0000 || block >= 0x0000_8000_0000_0000 {
+        return false;
+    }
+    let mut gg = 0usize;
+    let ok = crate::seh::guard(|| unsafe {
+        gg = *((block + GG_TLS_SLOT) as *const usize);
+    });
+    ok && looks_like_game_globals(gg)
+}
+
+/// Resolve (cached) the sim thread's TLS block so we can read the object/player slots off it.
+/// Throttled thread walk while unresolved; the block persists for the thread's lifetime.
+fn sim_tls_block() -> usize {
+    let cached = SIM_TLS_BLOCK.load(Ordering::Relaxed);
+    if cached != 0 && is_sim_tls_block(cached) {
+        return cached;
+    }
+    if SCAN_TICK_TLS.fetch_add(1, Ordering::Relaxed) % 30 != 0 {
+        return 0;
+    }
+    let found = unsafe {
+        let idx = match tls_index() {
+            Some(i) => i,
+            None => return 0,
+        };
+        let nt = match nt_qit() {
+            Some(f) => f,
+            None => return 0,
+        };
+        let pid = GetCurrentProcessId();
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return 0;
+        }
+        let mut te: THREADENTRY32 = core::mem::zeroed();
+        te.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
+        let mut block = 0usize;
+        if Thread32First(snap, &mut te) != 0 {
+            loop {
+                if te.th32OwnerProcessID == pid {
+                    let b = read_thread_tls_block(te.th32ThreadID, idx, nt);
+                    if b != 0 && is_sim_tls_block(b) {
+                        block = b;
+                        break;
+                    }
+                }
+                te.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
+                if Thread32Next(snap, &mut te) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+        block
+    };
+    SIM_TLS_BLOCK.store(found, Ordering::Relaxed);
+    found
+}
+
+/// Resolve the local player's Blam unit object-body pointer `U`, or 0 if unavailable.
+/// Cheap once the TLS block is cached; every deref is SEH-guarded so a stale handle cannot
+/// crash us. The caller must still validate `U` (vitality-array sanity) before writing.
+pub fn player_unit() -> usize {
+    let tls = sim_tls_block();
+    if tls == 0 {
+        return 0;
+    }
+    let mut u = 0usize;
+    crate::seh::guard(|| unsafe {
+        let pcg = *((tls + PCG_TLS_SLOT) as *const usize);
+        if pcg == 0 {
+            return;
+        }
+        let player_h = *((pcg + PCG_LOCAL0_HANDLE) as *const u32);
+        if player_h == 0xffff_ffff {
+            return;
+        }
+        let player_idx = (player_h & 0xffff) as usize;
+
+        let players_glob = *((tls + PLAYERS_TLS_SLOT) as *const usize);
+        if players_glob == 0 {
+            return;
+        }
+        let players_base = *((players_glob + PLAYERS_TABLE_OFF) as *const usize);
+        if players_base == 0 {
+            return;
+        }
+        let unit_h = *((players_base + player_idx * S_PLAYER_STRIDE + S_PLAYER_UNIT_HANDLE)
+            as *const u32);
+        if unit_h == 0xffff_ffff {
+            return;
+        }
+        let unit_idx = (unit_h & 0xffff) as usize;
+
+        let obj_glob = *((tls + OBJTABLE_TLS_SLOT) as *const usize);
+        if obj_glob == 0 {
+            return;
+        }
+        let table = *((obj_glob + OBJTABLE_BASE_OFF) as *const usize);
+        if table == 0 {
+            return;
+        }
+        u = *((table + unit_idx * OBJ_RECORD_STRIDE + OBJ_RECORD_BODY) as *const usize);
+    });
+    u
+}
+
 /// Turn night vision on/off by clearing bit 40 everywhere it is latched (the skull-apply
 /// code has no off-branch for NV, so we clear all three additive stores directly):
 ///   1. global sim skull set  `gameglobals+0x1EBE0`  (render reads live)

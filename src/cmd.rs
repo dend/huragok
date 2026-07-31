@@ -56,6 +56,8 @@ pub enum Cmd {
     SkullBit(u8, bool),
     SimSkull(u8, bool),
     NightVision(bool),
+    Invuln(bool),
+    OneShot(bool),
     Console(&'static str),
     FadeOut,
     FadeIn,

@@ -11,9 +11,11 @@ use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, WriteFile, OPEN_EXISTING};
+use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+#[cfg(feature = "console")]
 use windows_sys::Win32::System::Console::{
     AllocConsole, GetConsoleMode, SetConsoleMode, SetConsoleOutputCP, SetConsoleTitleW,
-    SetStdHandle, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING,
 };
 
 const RESET: &str = "\x1b[0m";
@@ -98,32 +100,19 @@ fn con_write(s: &str) {
     }
 }
 
-/// Allocate a console, enable UTF-8 + ANSI colour, and title it. We keep a PRIVATE handle
-/// to the console for our own output and repoint the process std handles at NUL, so the
-/// game's / Steam's own stdout logging (which can include account identifiers) never lands
-/// in our console - only our `[tag]` lines appear.
+/// Bring logging online. By default there is NO console window: every line goes to
+/// `huragok_log.txt` next to the exe and to the in-game ImGui console (both fed by
+/// [`emit`]). We still repoint the process std handles at NUL so the game's / Steam's own
+/// stdout logging (which can include account identifiers) is discarded rather than surfaced.
+///
+/// With the `console` feature we additionally open a private console window and keep a
+/// handle for colour output, for local debugging.
 pub fn init_console() {
     unsafe {
-        AllocConsole();
-        SetConsoleOutputCP(65001); // UTF-8, so glyphs render
-
         const GENERIC_WRITE: u32 = 0x4000_0000;
-        const GENERIC_READ: u32 = 0x8000_0000;
         const FILE_SHARE_RW: u32 = 0x0000_0003;
 
-        let conout: Vec<u16> = "CONOUT$".encode_utf16().chain(core::iter::once(0)).collect();
-        let h = CreateFileW(
-            conout.as_ptr(),
-            GENERIC_WRITE | GENERIC_READ,
-            FILE_SHARE_RW,
-            core::ptr::null(),
-            OPEN_EXISTING,
-            0,
-            core::ptr::null_mut(),
-        );
-        CONOUT.store(h as *mut c_void, Ordering::SeqCst);
-
-        // Send the game's stdout/stderr to NUL.
+        // Send any stdout/stderr to NUL. Works whether or not a console exists.
         let nul: Vec<u16> = "NUL".encode_utf16().chain(core::iter::once(0)).collect();
         let devnull = CreateFileW(
             nul.as_ptr(),
@@ -139,16 +128,43 @@ pub fn init_console() {
             SetStdHandle(STD_ERROR_HANDLE, devnull);
         }
 
-        let mut mode = 0u32;
-        if GetConsoleMode(h, &mut mode) != 0 {
-            SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-        }
-        let title: Vec<u16> = "Huragok - in-game hook engine"
-            .encode_utf16()
-            .chain(core::iter::once(0))
-            .collect();
-        SetConsoleTitleW(title.as_ptr());
+        #[cfg(feature = "console")]
+        alloc_debug_console();
     }
+}
+
+/// Open a private console window (debug builds only). Keeps a dedicated CONOUT$ handle so
+/// our coloured output is independent of the redirected std handles.
+#[cfg(feature = "console")]
+unsafe fn alloc_debug_console() {
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_RW: u32 = 0x0000_0003;
+
+    AllocConsole();
+    SetConsoleOutputCP(65001); // UTF-8, so glyphs render
+
+    let conout: Vec<u16> = "CONOUT$".encode_utf16().chain(core::iter::once(0)).collect();
+    let h = CreateFileW(
+        conout.as_ptr(),
+        GENERIC_WRITE | GENERIC_READ,
+        FILE_SHARE_RW,
+        core::ptr::null(),
+        OPEN_EXISTING,
+        0,
+        core::ptr::null_mut(),
+    );
+    CONOUT.store(h as *mut c_void, Ordering::SeqCst);
+
+    let mut mode = 0u32;
+    if GetConsoleMode(h, &mut mode) != 0 {
+        SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+    let title: Vec<u16> = "Huragok - in-game hook engine"
+        .encode_utf16()
+        .chain(core::iter::once(0))
+        .collect();
+    SetConsoleTitleW(title.as_ptr());
 }
 
 /// Print the startup header.
@@ -161,6 +177,11 @@ pub fn banner() {
     con_write(&rule);
     con_write(&format!(
         "  {DIM}waiting for a mission - hooks automatically once the world loads...{RESET}\n\n"
+    ));
+    // Also surface a line in the in-game ImGui console (the only log surface by default).
+    emit(&format!(
+        "[huragok] ready (build {}) - open the panel with Ctrl+B",
+        env!("HURAGOK_BUILD")
     ));
 }
 

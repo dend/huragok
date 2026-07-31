@@ -6,9 +6,13 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+#[cfg(feature = "console")]
 use windows_sys::Win32::Foundation::CloseHandle;
+#[cfg(feature = "console")]
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
+#[cfg(feature = "console")]
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+#[cfg(feature = "console")]
 use windows_sys::Win32::System::Threading::{CreateThread, Sleep};
 
 static QUEUE: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
@@ -30,6 +34,7 @@ pub fn submit(line: String) {
 }
 
 /// Spawn the stdin reader thread (call once, after the console is allocated).
+#[cfg(feature = "console")]
 pub fn start() {
     unsafe {
         let h = CreateThread(
@@ -46,6 +51,7 @@ pub fn start() {
     }
 }
 
+#[cfg(feature = "console")]
 unsafe extern "system" fn reader(_p: *mut core::ffi::c_void) -> u32 {
     let h = GetStdHandle(STD_INPUT_HANDLE);
     let mut buf = [0u8; 1024];

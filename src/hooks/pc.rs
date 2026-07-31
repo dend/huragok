@@ -68,6 +68,13 @@ unsafe extern "system" fn pc_detour(self_: *mut u8, func: *mut u8, parms: *mut c
             }
             IN_DRAIN.with(|d| d.set(false));
         }
+        // Cheat maintenance: re-assert invulnerability so the sim cannot clear the flag.
+        // Cheap no-op while the cheat is off; SEH-guarded internally.
+        if t % 8 == 0 {
+            IN_DRAIN.with(|d| d.set(true));
+            crate::simunit::tick();
+            IN_DRAIN.with(|d| d.set(false));
+        }
     }
     let orig: PeFn = core::mem::transmute(PC_PE.load(Ordering::Relaxed));
     orig(self_, func, parms);

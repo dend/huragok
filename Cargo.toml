@@ -11,6 +11,11 @@ repository = "https://github.com/dend/huragok"
 name = "huragok"
 crate-type = ["cdylib"]
 
+[features]
+# Off by default: no console window, logs go to the in-game ImGui console and
+# huragok_log.txt. Enable for a private debug console window and stdin command input.
+console = []
+
 [dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

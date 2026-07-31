@@ -61,6 +61,7 @@ static PANEL: AtomicBool = AtomicBool::new(false);
 static SHOW_KF: AtomicBool = AtomicBool::new(false); // keyframe list window open
 static SHOW_CONSOLE: AtomicBool = AtomicBool::new(false); // ImGui console window open
 static FLASHLIGHT: AtomicBool = AtomicBool::new(false); // flashlight checkbox state
+static INVULN: AtomicBool = AtomicBool::new(false); // invulnerability checkbox state
 static FAULTED_WIDGETS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 // Input buffer for the ImGui console box. Only touched on the ImGui draw thread.
@@ -486,6 +487,22 @@ unsafe fn draw_panel() {
                     ));
                 }
             }
+        }
+    }
+
+    // ---- Direct modifiers ----
+    // Direct sim writes. The native hs cheat functions/globals are inert in this build, so
+    // invulnerability instead resolves the player's Blam unit and sets the damage-core
+    // "cannot take damage" flag directly, re-asserted each frame.
+    if header!(b"Direct modifiers\0", 0) {
+        let mut invuln = INVULN.load(Ordering::Relaxed);
+        let mut ci = false;
+        guarded("invuln", || {
+            ci = checkbox(b"Invulnerability\0".as_ptr() as *const c_char, &mut invuln)
+        });
+        if ci {
+            INVULN.store(invuln, Ordering::Relaxed);
+            push(Cmd::Invuln(invuln));
         }
     }
 

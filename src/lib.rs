@@ -21,6 +21,7 @@ mod pawn;
 mod perf;
 mod seh;
 mod simtime;
+mod simunit;
 mod state;
 mod stats;
 mod ue;
@@ -54,7 +55,10 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
 /// Worker thread: bring the engine online, then hand off to feature hooks.
 unsafe extern "system" fn run(_param: *mut c_void) -> u32 {
     log::init_console();
-    console::start(); // stdin reader: type console commands (e.g. hs:skull_enable ...)
+    // stdin reader for typed console commands - only meaningful with the debug console
+    // window. By default commands come from the in-game ImGui console input box.
+    #[cfg(feature = "console")]
+    console::start();
     mem::init();
     log::banner();
 
