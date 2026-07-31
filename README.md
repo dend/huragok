@@ -10,12 +10,12 @@
 </p>
 
 > [!CAUTION]
-> **Use this at your own risk.** Huragok modifies the game while it runs. Halo: Campaign
-> Evolved is in early access. Halo Studios supports modding for the title (see the
-> [Early Access Primer](https://www.halowaypoint.com/news/early-access-primer)), but there
-> is no guarantee that this particular mod will always be considered acceptable, and that
-> stance could change in the future. Experiment for fun, and understand that you alone are
-> responsible for how you use it.
+> **Use this at your own risk.** Huragok modifies the game while it runs. Halo Studios
+> allows modding for this title within the limits it sets out in
+> [Get Ready for Early Access](https://www.halowaypoint.com/news/early-access-primer), but
+> there is no guarantee that this particular mod will always be considered acceptable, and
+> that stance could change in the future. Experiment for fun, and understand that you alone
+> are responsible for how you use it.
 
 Huragok is a single-player toolbox for Halo: Campaign Evolved. It adds a free-flying
 camera, an in-game control panel, skull toggles, time controls, and a keyframe system
