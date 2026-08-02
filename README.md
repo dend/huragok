@@ -49,8 +49,10 @@ the game's own files are left alone.
    ```powershell
    .\install.ps1
    ```
-   It finds your Steam copy of the game, sets up the proxy it loads through, and copies
-   the mod in. If your game is not on Steam, point it at the install folder:
+   It finds your Steam copy of the game, including current Steam installs whose game
+   binary lives under `Content\Meteorite\Binaries\Win64`, sets up the proxy it loads
+   through, and copies the mod in. If your game is not on Steam, point it at the install
+   folder (or directly at its `Binaries` folder):
    ```powershell
    .\install.ps1 -GamePath "D:\Games\Halo Campaign Evolved"
    ```
@@ -75,8 +77,9 @@ next to the game. To set it up by hand:
 1. Copy Windows' own `dwmapi.dll` (from `C:\Windows\System32\`) into the game's binaries
    folder:
    ```
-   ...\Halo Campaign Evolved\Meteorite\Binaries\Win64\
+   ...\Halo Campaign Evolved\Content\Meteorite\Binaries\Win64\
    ```
+   Older Steam installs may omit the `Content` directory.
 2. In that same folder, create a `mods` folder if there isn't one, and copy `huragok.dll`
    into it.
 3. Launch the game.

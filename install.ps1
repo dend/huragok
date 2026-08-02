@@ -9,7 +9,7 @@
     huragok.dll sits next to the script.
 
 .PARAMETER GamePath
-    The game's install folder (the one that contains "Meteorite"). Omit it to
+    The game's install folder, Content folder, or binaries folder. Omit it to
     auto-detect the game from your Steam libraries.
 
 .PARAMETER DwmapiPath
@@ -94,16 +94,37 @@ function Get-SteamLibraries($SteamRoot) {
     return $libraries | Select-Object -Unique
 }
 
-function Find-GamePath {
+function Resolve-GameBinaryDirectory([string]$Path) {
+    if (-not $Path) { return $null }
+
+    # Steam's current package puts the executable under Content\Meteorite, while
+    # earlier Steam installs used Meteorite directly. Accept either layout, as well
+    # as a path supplied directly to the binaries directory.
+    $candidates = @(
+        $Path,
+        (Join-Path $Path 'Content\Meteorite\Binaries\Win64'),
+        (Join-Path $Path 'Content\Meteorite\Binaries\WinGDK'),
+        (Join-Path $Path 'Meteorite\Binaries\Win64'),
+        (Join-Path $Path 'Meteorite\Binaries\WinGDK')
+    ) | Select-Object -Unique
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path (Join-Path $candidate 'HaloCampaignEvolved.exe')) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Find-GameBinaryDirectory {
     $steam = Get-SteamRoot
     if (-not $steam) { return $null }
     foreach ($library in Get-SteamLibraries $steam) {
         $common = Join-Path $library 'steamapps\common'
         if (-not (Test-Path $common)) { continue }
         foreach ($dir in Get-ChildItem -Path $common -Directory -ErrorAction SilentlyContinue) {
-            if (Test-Path (Join-Path $dir.FullName 'Meteorite\Binaries\Win64')) {
-                return $dir.FullName
-            }
+            $binaryDirectory = Resolve-GameBinaryDirectory $dir.FullName
+            if ($binaryDirectory) { return $binaryDirectory }
         }
     }
     return $null
@@ -125,15 +146,13 @@ try {
 
     if (-not $GamePath) {
         Write-Task 'Searching your Steam libraries for the game'
-        $GamePath = Find-GamePath
+        $win64 = Find-GameBinaryDirectory
     }
-    if (-not $GamePath) {
-        throw "Could not find the game automatically. Re-run with -GamePath pointing at the folder that contains Meteorite."
+    if (-not $win64) {
+        $win64 = Resolve-GameBinaryDirectory $GamePath
     }
-
-    $win64 = Join-Path $GamePath 'Meteorite\Binaries\Win64'
-    if (-not (Test-Path $win64)) {
-        throw "'$win64' does not exist. Point -GamePath at the game's install folder (the one that contains Meteorite)."
+    if (-not $win64) {
+        throw "Could not find HaloCampaignEvolved.exe. Re-run with -GamePath pointing at the game, Content, or Binaries folder."
     }
     Write-Done 'Game' $win64
 
