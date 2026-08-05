@@ -44,6 +44,11 @@ the game's own files are left alone.
 
 ## Play as an enemy
 
+> [!WARNING]
+> This feature is experimental and rougher than the rest of the toolbox. Expect it to
+> glitch or break in places. If you run into problems, please
+> [open an issue](https://github.com/dend/huragok/issues) and let us know.
+
 Aim at an enemy and press `Ctrl+G`. The view drops into third person and you take over
 that body. Move with `W` `A` `S` `D`, aim with the mouse, and click to fire its weapon.
 Its own side leaves you alone while you wear it, so you can walk through a Covenant
