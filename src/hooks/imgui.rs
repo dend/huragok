@@ -293,6 +293,26 @@ unsafe fn draw_panel() {
         }
     }
 
+    // ---- Play as AI (possession) ----
+    if header!(b"Play as AI\0", OPEN) {
+        match crate::possess::possessed_team_name() {
+            Some(team) => {
+                // Faction is automatic (player observer team = the possessed sect, restored on
+                // release); possession/control is all via Ctrl+G, so there's nothing to toggle here.
+                let t = std::ffi::CString::new(format!(
+                    "Possessing a {team} unit. Ctrl+G to release."
+                ))
+                .unwrap_or_default();
+                text(b"%s\0".as_ptr() as *const c_char, t.as_ptr());
+            }
+            None => {
+                let t = std::ffi::CString::new("Ctrl+G to possess the enemy you're aiming at.")
+                    .unwrap_or_default();
+                text(b"%s\0".as_ptr() as *const c_char, t.as_ptr());
+            }
+        }
+    }
+
     // ---- Machinima ----
     if header!(b"Machinima\0", OPEN) {
         let mut fc = cam().freecam;

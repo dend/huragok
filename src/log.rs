@@ -188,8 +188,12 @@ pub fn banner() {
 }
 
 fn log_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("huragok_log.txt"))
+    Some(exe_dir()?.join("huragok_log.txt"))
+}
+
+/// The directory the game exe lives in (where we drop huragok_*.txt files).
+pub fn exe_dir() -> Option<std::path::PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
 }
 
 /// Emit one log line (backs the [`rep!`](crate::rep) macro).

@@ -57,6 +57,12 @@ unsafe extern "system" fn pc_detour(self_: *mut u8, func: *mut u8, parms: *mut c
             }
             IN_DRAIN.with(|d| d.set(false));
         }
+        // Deferred possession AI enable/disable (runs hs on the safe game-thread drain).
+        IN_DRAIN.with(|d| d.set(true));
+        crate::possess::service(self_);
+        IN_DRAIN.with(|d| d.set(false));
+        // Per-frame possession binding re-assert (memory only, no ProcessEvent).
+        crate::possess::control_tick();
         // Refresh live stats / campaign readout on the game thread, throttled (ProcessEvent
         // fires often). Campaign changes rarely, so refresh it less frequently.
         let t = STAT_TICK.fetch_add(1, Ordering::Relaxed);
@@ -65,6 +71,9 @@ unsafe extern "system" fn pc_detour(self_: *mut u8, func: *mut u8, parms: *mut c
             crate::stats::refresh(self_);
             if t % 256 == 0 {
                 crate::campaign::refresh(self_);
+                // Persistent observer-team probe (confirms player+0xAC after release, when the
+                // possession diag isn't running). 1 = UNSC (faction reset), 3 = Covenant, etc.
+                crate::rep!("[obsteam] player+0xAC={:?}", crate::simtime::player_team_byte());
             }
             IN_DRAIN.with(|d| d.set(false));
         }
@@ -75,6 +84,7 @@ unsafe extern "system" fn pc_detour(self_: *mut u8, func: *mut u8, parms: *mut c
             crate::simunit::tick();
             IN_DRAIN.with(|d| d.set(false));
         }
+        // (Corpse-hide removed: the user wants normal behavior, not vanished bodies.)
     }
     let orig: PeFn = core::mem::transmute(PC_PE.load(Ordering::Relaxed));
     orig(self_, func, parms);

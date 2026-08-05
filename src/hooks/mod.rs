@@ -3,6 +3,7 @@
 pub mod camera;
 pub mod imgui;
 pub mod pc;
+pub mod sim_seed;
 
 use core::ffi::c_void;
 use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_READWRITE};

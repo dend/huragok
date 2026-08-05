@@ -258,7 +258,10 @@ pub fn execute(pc: *mut u8, c: Cmd) {
             }
             Cmd::FullbodyOn => set_perspective(pc, 2),  // ThirdPerson
             Cmd::FullbodyOff => set_perspective(pc, 1), // FirstPerson
-            Cmd::ImguiInput => run_console(pc, "ImGui.ToggleInput"),
+            Cmd::ImguiInput => {
+                run_console(pc, "ImGui.ToggleInput");
+                crate::possess::note_cursor_toggle();
+            }
             Cmd::Console(s) => run_console(pc, s),
             Cmd::Slomo(v) => {
                 set_time_dilation(v);
@@ -299,6 +302,9 @@ pub fn execute(pc: *mut u8, c: Cmd) {
             Cmd::OneShot(on) => crate::simunit::set_oneshot(on),
             Cmd::FadeOut => camera_fade(true),
             Cmd::FadeIn => camera_fade(false),
+            Cmd::Possess => crate::possess::toggle(pc),
+            Cmd::Unpossess => crate::possess::unpossess(),
+            Cmd::DumpRefs => crate::dump::run(pc),
         }
     }
 }
@@ -396,7 +402,7 @@ fn pawn_fx(pawn: *mut u8, c: Cmd) {
 /// Two rules from the disassembly: (1) do NOT pre-write pawn+0x3C1 - the function early-
 /// outs if it already equals the requested value; (2) open the third-person show gate
 /// (repmgr+0x13c) the inner driver reads, or the body/weapon can stay hidden.
-fn set_perspective(pc: *mut u8, persp: u8) {
+pub fn set_perspective(pc: *mut u8, persp: u8) {
     let ran = crate::seh::guard(|| unsafe {
         let pawn = get_pawn(pc);
         if pawn.is_null() {
@@ -421,9 +427,318 @@ fn set_perspective(pc: *mut u8, persp: u8) {
     }
 }
 
-/// Run a console command line (from the console input reader), via ExecuteConsoleCommand.
+/// Hide (or show) the Chief pawn's MESHES only, leaving the pawn ACTOR live in the world. Whole-
+/// actor `SetActorHiddenInGame` yanks the pawn out of the render relevance/draw-distance set, and
+/// since that set is anchored on the pawn, primitives cull once the possessed body moves away from
+/// where the (hidden) pawn sits. Hiding just the meshes keeps Chief invisible while the pawn actor
+/// stays a live relevance anchor (and tracks the possessed unit). Returns the mesh count touched.
+pub fn hide_pawn_mesh(pc: *mut u8, hidden: bool) -> u32 {
+    let pawn = unsafe { get_pawn(pc) };
+    if pawn.is_null() {
+        return 0;
+    }
+    let mut n = 0u32;
+    let _ = crate::seh::guard(|| unsafe {
+        let cnt = crate::ue::object::num_elements();
+        for i in 0..cnt {
+            let o = crate::ue::object::object_at(i);
+            if o.is_null() {
+                continue;
+            }
+            let mut owner = *((o as usize + crate::offsets::UO_OUTER) as *const *mut u8);
+            let mut owned = false;
+            for _ in 0..6 {
+                if owner.is_null() {
+                    break;
+                }
+                if owner == pawn {
+                    owned = true;
+                    break;
+                }
+                owner = *((owner as usize + crate::offsets::UO_OUTER) as *const *mut u8);
+            }
+            if !owned {
+                continue;
+            }
+            let cn = crate::ue::fname::obj_name(class_of(o));
+            if !cn.contains("SkeletalMesh") && !cn.contains("StaticMesh") {
+                continue;
+            }
+            set_mesh_visible(o, !hidden);
+            n += 1;
+        }
+    });
+    n
+}
+
+/// Quiet per-tick re-assert of the camera perspective (the native setter early-outs if already at
+/// `persp`). Possession leaves the engine in first-person while our camera is a third-person boom,
+/// which arms UE's FP near-field/relevance pass against the wrong origin -> nearby units' meshes/
+/// attachments (Jackal shields, Hunter worms, whole Hunters) pop in and out. Holding perspective 2
+/// aligns the engine's view-relevance with the actual TP camera. No log, no gate write (set once by
+/// set_perspective on the initial switch); the pawn/unit re-association can bounce it back to 1.
+/// Takes the pawn pointer DIRECTLY (not the PC) - do NOT call get_pawn here. get_pawn is a
+/// ProcessEvent on the PlayerController, and this runs every tick from control_tick (itself inside
+/// pc_detour's ProcessEvent), so calling it would re-enter pc_detour -> control_tick -> ... =
+/// infinite recursion -> stack overflow. The caller passes a cached pawn. SetCameraPerspective is a
+/// direct native call (no ProcessEvent), so it's re-entrancy-safe.
+pub fn reassert_perspective(pawn: *mut u8, persp: u8) {
+    if pawn.is_null() {
+        return;
+    }
+    let _ = crate::seh::guard(|| unsafe {
+        type SetPersp = unsafe extern "system" fn(*mut u8, u8, *mut i32);
+        let f: SetPersp = core::mem::transmute(base() + SET_CAMERA_PERSPECTIVE);
+        let mut ctx = [-1i32, -1i32];
+        f(pawn, persp, ctx.as_mut_ptr());
+    });
+}
+
+/// Freeze the local player's own pawn from wandering during puppet possession, so WASD doesn't
+/// walk the invisible Chief off while we drive the enemy. Uses ONLY SetIgnoreMoveInput /
+/// SetIgnoreLookInput - NOT DisableInput. DisableInput flips UE's whole input mode, which
+/// captured the mouse cursor full-time and starved key reads; the ignore flags gate movement
+/// axes without touching cursor/UI mode.
+pub fn freeze_input(pc: *mut u8) {
+    let mut t = 1u8;
+    pe_call(pc, "SetIgnoreMoveInput", &mut t as *mut _ as *mut c_void, 1);
+    pe_call(pc, "SetIgnoreLookInput", &mut t as *mut _ as *mut c_void, 1);
+}
+
+/// Restore the local player's input (undo [`freeze_input`]).
+pub fn unfreeze_input(pc: *mut u8) {
+    pe_call(pc, "ResetIgnoreInputFlags", core::ptr::null_mut(), 0);
+}
+
+/// Read the PlayerController control rotation as `(yaw, pitch)` in UE degrees, or None if the
+/// `ControlRotation` UPROPERTY can't be resolved. FRotator = 3x f64 `[pitch@0, yaw@8, roll@16]`
+/// (UE5 large-world-coords). This is the game's single authoritative look value: native mouse
+/// drives it, and native movement + weapon aim are both relative to it. The possession camera
+/// reads it so the third-person view trails the body and WASD-forward matches the view.
+pub fn get_control_rotation(pc: *mut u8) -> Option<(f64, f64)> {
+    if pc.is_null() {
+        return None;
+    }
+    let off = crate::ue::reflect::property_offset(unsafe { class_of(pc) }, "ControlRotation")?;
+    if !(0..0x2000).contains(&off) {
+        return None;
+    }
+    let mut out = None;
+    let _ = crate::seh::guard(|| unsafe {
+        let p = (pc as usize + off as usize) as *const f64;
+        out = Some((*p.add(1), *p)); // (yaw, pitch)
+    });
+    out
+}
+
+/// Write the PlayerController control rotation from `(yaw, pitch)` in UE degrees (roll forced 0).
+/// FRotator = 3x f64 `[pitch, yaw, roll]`. Native movement + weapon aim are control-rotation-
+/// relative, and native mouse does NOT update control rotation during possession, so we stamp it
+/// from our look each tick to make WASD-forward and aim follow the camera.
+pub fn set_control_rotation(pc: *mut u8, yaw: f64, pitch: f64) {
+    if pc.is_null() {
+        return;
+    }
+    let Some(off) = crate::ue::reflect::property_offset(unsafe { class_of(pc) }, "ControlRotation")
+    else {
+        return;
+    };
+    if !(0..0x2000).contains(&off) {
+        return;
+    }
+    let _ = crate::seh::guard(|| unsafe {
+        let p = (pc as usize + off as usize) as *mut f64;
+        *p = pitch;
+        *p.add(1) = yaw;
+        *p.add(2) = 0.0;
+    });
+}
+
+// Cache of the possessed enemy's third-person body-mesh components, so we can re-assert their
+// owner-visibility cheaply every tick without re-walking the whole UObject array (O(N), too heavy
+// for per-ProcessEvent). Populated by show_actor_body(_, true); consumed by reassert_body_visible.
+// Must fit the LARGEST unit's mesh set or the uncached components get re-hidden by the mesh-sync
+// layer (reassert_body_visible only re-shows cached ones). A Hunter is ~38 meshes (armor plates +
+// worms); 24 left the worms uncached -> re-hidden -> invisible. 48 covers it with headroom.
+const BODY_CACHE_N: usize = 48;
+static BODY_COMPS: [AtomicUsize; BODY_CACHE_N] = [const { AtomicUsize::new(0) }; BODY_CACHE_N];
+static BODY_COMP_CT: AtomicUsize = AtomicUsize::new(0);
+
+/// Clear bOwnerNoSee / bOnlyOwnerSee on a primitive so the owning player's own camera sees it.
+unsafe fn set_owner_visible(o: *mut u8) {
+    let mut no = 0u8;
+    pe_call(o, "SetOwnerNoSee", &mut no as *mut u8 as *mut c_void, 1);
+    let mut only = 0u8;
+    pe_call(o, "SetOnlyOwnerSee", &mut only as *mut u8 as *mut c_void, 1);
+}
+
+/// Force a mesh component's own visibility on/off (SetVisibility + SetHiddenInGame, no propagate).
+unsafe fn set_mesh_visible(o: *mut u8, visible: bool) {
+    let mut vis = [visible as u8, 0u8];
+    pe_call(o, "SetVisibility", vis.as_mut_ptr() as *mut c_void, 2);
+    let mut hidden = [(!visible) as u8, 0u8];
+    pe_call(o, "SetHiddenInGame", hidden.as_mut_ptr() as *mut c_void, 2);
+}
+
+/// Force `actor`'s third-person body meshes owner-VISIBLE (show=true), or restore owner-hidden
+/// (show=false), by clearing/setting bOwnerNoSee on its non-proxy skeletal-mesh components. This
+/// is the fix for the possessed enemy body being invisible to us once we own the unit: the
+/// bind-swap sets bOwnerNoSee on the enemy WorldRepresentation (only its shield, a separate
+/// owner-visible primitive, stayed visible). Walks the UObject array (O(N)) - call on possess
+/// only; per-tick upkeep uses the cheap cached [`reassert_body_visible`]. When show=true it caches
+/// the found components. Returns the count. SEH-guarded.
+pub fn show_actor_body(actor: *mut u8, show: bool) -> u32 {
+    if actor.is_null() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let _ = crate::seh::guard(|| unsafe {
+        let n = crate::ue::object::num_elements();
+        for i in 0..n {
+            let o = crate::ue::object::object_at(i);
+            if o.is_null() {
+                continue;
+            }
+            // Owned by `actor` within a few Outer hops (catches sub-meshes like head -> body,
+            // and armor pieces nested a couple levels deeper).
+            let mut owner = *((o as usize + crate::offsets::UO_OUTER) as *const *mut u8);
+            let mut owned = false;
+            for _ in 0..8 {
+                if owner.is_null() {
+                    break;
+                }
+                if owner == actor {
+                    owned = true;
+                    break;
+                }
+                owner = *((owner as usize + crate::offsets::UO_OUTER) as *const *mut u8);
+            }
+            if !owned {
+                continue;
+            }
+            let name = crate::ue::fname::obj_name(o);
+            let cn = crate::ue::fname::obj_name(class_of(o));
+            // Include BOTH skeletal (body) AND static (armor pieces / attachments) meshes - the
+            // enemy's armor is separate StaticMesh components, so a SkeletalMesh-only filter left
+            // the model "half rendered / no armor".
+            let is_mesh = cn.contains("SkeletalMesh")
+                || name.contains("SkeletalMesh")
+                || cn.contains("StaticMesh")
+                || name.contains("StaticMesh");
+            if !is_mesh {
+                continue;
+            }
+            // For an ENEMY there are no first-person arms; skip only shadow/camo proxies.
+            let is_proxy = name.contains("Shadow") || name.contains("Translucent");
+            if show {
+                if is_proxy {
+                    set_mesh_visible(o, false); // hide FP arms / shadow / camo overlay
+                    continue;
+                }
+                // Real world body: owner-visible AND force it rendered (bOwnerNoSee alone did not
+                // reveal it - the mesh was also hidden/only-owner-see, like the pawn's TP body).
+                set_owner_visible(o);
+                set_mesh_visible(o, true);
+                if count < BODY_CACHE_N {
+                    BODY_COMPS[count].store(o as usize, Ordering::Relaxed);
+                }
+                count += 1;
+            } else if !is_proxy {
+                let mut yes = 1u8;
+                pe_call(o, "SetOwnerNoSee", &mut yes as *mut u8 as *mut c_void, 1); // re-hide
+                count += 1;
+            }
+        }
+    });
+    BODY_COMP_CT.store(if show { count.min(BODY_CACHE_N) } else { 0 }, Ordering::Relaxed);
+    count as u32
+}
+
+/// Cheap per-tick re-assert of body owner-visibility on the cached components (no array walk).
+/// The mesh-sync layer re-hides the body a frame or two AFTER the bind, so a one-shot show loses
+/// the race; re-asserting each tick wins it. No-op until [`show_actor_body`] has populated the cache.
+pub fn reassert_body_visible() {
+    let ct = BODY_COMP_CT.load(Ordering::Relaxed);
+    for i in 0..ct {
+        let o = BODY_COMPS[i].load(Ordering::Relaxed) as *mut u8;
+        if !o.is_null() {
+            let _ = crate::seh::guard(|| unsafe {
+                set_owner_visible(o);
+                set_mesh_visible(o, true);
+            });
+        }
+    }
+}
+
+/// Hide (or show) the local player's pawn actor - the Chief rig. During bind-slot possession
+/// the pawn teleports onto the possessed unit; hiding it leaves only the enemy WorldRepresentation
+/// on screen (which stays visible because we never write the controlling-player datum +0x1BC).
+/// `AActor::SetActorHiddenInGame(bool)`, ParmsSize 1. Returns the pawn pointer it acted on.
+pub fn hide_pawn(pc: *mut u8, hidden: bool) -> *mut u8 {
+    let pawn = unsafe { get_pawn(pc) };
+    if pawn.is_null() {
+        return core::ptr::null_mut();
+    }
+    let mut h = hidden as u8;
+    pe_call(pawn, "SetActorHiddenInGame", &mut h as *mut _ as *mut c_void, 1);
+    pawn
+}
+
+/// `AActor::SetActorHiddenInGame(bool)` on an arbitrary actor (e.g. a dead enemy body we want to
+/// suppress). ProcessEvent on that actor, not the PC, so it's safe off the game-thread drain.
+pub fn set_actor_hidden(actor: *mut u8, hidden: bool) {
+    if actor.is_null() {
+        return;
+    }
+    let mut h = hidden as u8;
+    pe_call(actor, "SetActorHiddenInGame", &mut h as *mut _ as *mut c_void, 1);
+}
+
+/// Re-assert Chief's pawn HIDDEN using an already-resolved pawn pointer - safe in `control_tick`
+/// (ProcessEvent on the PAWN, not the PC, so it can't re-enter `pc_detour`; NO `get_pawn`). Belt-and-
+/// suspenders against the mesh-sync layer re-showing the escort pawn while we drag it with the unit.
+pub fn reassert_pawn_hidden(pawn: *mut u8) {
+    if pawn.is_null() {
+        return;
+    }
+    let mut h = 1u8;
+    pe_call(pawn, "SetActorHiddenInGame", &mut h as *mut _ as *mut c_void, 1);
+}
+
+/// Run a console command line (from the console input reader or the watched command file).
+/// Lines beginning with `huragok` are mod builtins handled here; everything else goes to the
+/// game via ExecuteConsoleCommand.
 pub fn run_console_line(pc: *mut u8, cmd: &str) {
+    let t = cmd.trim();
+    if let Some(rest) = t.strip_prefix("huragok") {
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            huragok_builtin(pc, rest.trim());
+            return;
+        }
+    }
     run_console(pc, cmd);
+}
+
+/// Dispatch a `huragok <subcommand>` mod builtin (game thread).
+fn huragok_builtin(pc: *mut u8, rest: &str) {
+    match rest.split_whitespace().next() {
+        Some("possess") | Some("spectate") => crate::possess::select_and_possess(pc),
+        Some("control") | Some("drive") => crate::possess::control(pc),
+        Some("ai") => crate::possess::set_ai(pc, rest.split_whitespace().nth(1) != Some("off")),
+        Some("diagunit") => crate::possess::diagunit(pc),
+        Some("diagweapon") => crate::possess::diagweapon(pc),
+        Some("unpossess") | Some("release") => crate::possess::unpossess(),
+        Some("view") => {
+            let arg = rest.split_whitespace().nth(1).unwrap_or("toggle");
+            crate::possess::set_view(arg);
+        }
+        Some("dump") | Some("refs") => crate::dump::run(pc),
+        Some("run") => crate::script::run_now(),
+        None | Some("help") => {
+            crate::rep!("[huragok] builtins: possess | control | release | ai <on|off> | view <first|third> | diagunit | dump | run | help");
+        }
+        Some(other) => crate::rep!("[huragok] unknown builtin '{}' (try: help)", other),
+    }
 }
 
 /// Third-person body, surgically. The pawn owns EIGHT skeletal meshes: first-person

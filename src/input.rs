@@ -45,6 +45,9 @@ const VK_OEM_2: i32 = 0xBF; // /
 const K_K: i32 = b'K' as i32;
 const K_J: i32 = b'J' as i32;
 const K_L: i32 = b'L' as i32;
+const K_G: i32 = b'G' as i32;
+const K_U: i32 = b'U' as i32;
+const K_H: i32 = b'H' as i32;
 
 const DEG: f64 = std::f64::consts::PI / 180.0;
 
@@ -108,6 +111,50 @@ pub fn poll_hotkeys() {
     }
     if combo(K_L) {
         crate::paths::clear();
+    }
+    if combo(K_G) {
+        push(Cmd::Possess); // toggle play-as-AI camera (possess aimed/nearest, or release)
+    }
+    if combo(K_H) {
+        crate::possess::set_view("toggle"); // cycle first / third person
+    }
+    if combo(K_U) {
+        crate::script::run_now(); // re-run huragok_cmds.txt now
+    }
+    if combo(K_E) {
+        // Native "play as an Elite": the engine's own player-representation swap. If this campaign
+        // authors a Covenant player representation, this sets ALL subsystems (body/faction/HUD/
+        // control) coherently in one shot - the antidote to hand-assembling possession. Ctrl+Shift
+        // is not distinguished, so revert with `hs:player_set_spartan_loadout` in the console.
+        crate::console::submit("hs:player_set_elite_loadout".to_string());
+        crate::rep!("[elite] Ctrl+E -> hs:player_set_elite_loadout (native play-as-elite test)");
+    }
+}
+
+/// While possessing (and not in free-cam), capture the mouse to drive the shared look direction
+/// that the possession camera and the unit's aim both read. Call ~60 Hz.
+pub fn poll_possess_look() {
+    if !crate::possess::follow_active() || crate::possess::cursor_active() {
+        return; // not possessing, or the UI has the cursor - leave the mouse alone
+    }
+    if crate::possess::control_active() {
+        // Full-native control: the game's own Enhanced Input owns the mouse (drives control rotation
+        // -> the possessed unit's aim/facing/movement, which our camera reads). Recentering here
+        // would hijack the cursor AND starve native look. Leave the mouse entirely alone.
+        return;
+    }
+    let fc = { cam().freecam };
+    if fc {
+        return; // free-cam owns the mouse when active
+    }
+    unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        let cx = GetSystemMetrics(SM_CXSCREEN) / 2;
+        let cy = GetSystemMetrics(SM_CYSCREEN) / 2;
+        const SENS: f32 = 0.0022; // rad/pixel
+        crate::look::add((pt.x - cx) as f32 * SENS, (pt.y - cy) as f32 * SENS);
+        SetCursorPos(cx, cy);
     }
 }
 
