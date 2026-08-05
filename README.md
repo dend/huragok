@@ -18,10 +18,11 @@
 > are responsible for how you use it.
 
 Huragok is a single-player toolbox for Halo: Campaign Evolved. It adds a free-flying
-camera, an in-game control panel, skull toggles, time controls, and a keyframe system
-for camera shots, all from inside the running game. Point it at a mission and you can
-fly around a firefight, slow it down, flip skulls on and off, or set up a moving camera
-path for a clip.
+camera, an in-game control panel, skull toggles, time controls, a keyframe system
+for camera shots, and a way to take over an enemy and play as it, all from inside the
+running game. Point it at a mission and you can fly around a firefight, slow it down,
+flip skulls on and off, drop into a Grunt or an Elite and fight as it, or set up a
+moving camera path for a clip.
 
 It runs as a mod that loads while the game is running. Nothing on disk is patched and
 the game's own files are left alone.
@@ -38,7 +39,19 @@ the game's own files are left alone.
 - Slow down or speed up time, or pause on a frame
 - Turn skulls on and off from a checklist, including third-person and night vision
 - Record camera keyframes and play back a smooth moving shot
+- Take over a nearby enemy and play as it in third person, aiming and firing its weapon
 - Read live mission info: current mission, difficulty, checkpoint, and framerate
+
+## Play as an enemy
+
+Aim at an enemy and press `Ctrl+G`. The view drops into third person and you take over
+that body. Move with `W` `A` `S` `D`, aim with the mouse, and click to fire its weapon.
+Its own side leaves you alone while you wear it, so you can walk through a Covenant
+patrol as one of them. Press `Ctrl+G` again to step out and go back to the Chief.
+
+This is for messing around, not for finishing a mission. It works best up close.
+Enemies far across the level may stand still until you walk toward them, the same way
+the game brings them to life as you get near.
 
 ## Install
 
@@ -104,6 +117,11 @@ Panel and commands:
 - `Ctrl+Home` / `Ctrl+End` cinematic bars on or off
 - `Ctrl+F5` / `Ctrl+F6` fade out or in
 - `Ctrl+K` add a camera keyframe, `Ctrl+J` play or stop the path, `Ctrl+L` clear it
+
+Play as an enemy:
+
+- `Ctrl+G` take over the enemy you are aiming at, or hand the body back
+- Then move, aim, and fire as you normally would
 
 Skulls, time, the console, and the mission readout all live inside the panel.
 
