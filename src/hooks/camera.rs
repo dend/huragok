@@ -24,6 +24,7 @@ static ALIVE: AtomicBool = AtomicBool::new(false);
 static SAW_UPDATE: AtomicBool = AtomicBool::new(false);
 static FAULTED: AtomicBool = AtomicBool::new(false);
 static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static CAM_DIAG: AtomicUsize = AtomicUsize::new(0);
 // Lock-free FOV state for the GetFOVAngle detour, so it never touches the cam() Mutex
 // (which the detour already holds on the same thread -> would self-deadlock).
 static FORCED_FOV: AtomicU32 = AtomicU32::new(0x42b4_0000); // 90.0f32 bits
@@ -145,17 +146,63 @@ fn cam_override(self_: *mut u8, func: *mut u8, parms: *mut c_void, orig: PeFn) {
         crate::pawn::hold_pawn_state();
 
         let mut st = cam();
+        let follow = crate::possess::follow_active();
 
-        // Force POV.FOV: always in free-cam, otherwise only when the user locked it.
-        // Blam ignores the BlueprintUpdateCamera FOV out-param, so write the camera
-        // manager's ViewTarget.POV.FOV (0x3B0) directly each frame.
+        // Force POV.FOV: always in free-cam or while following an AI, otherwise only when the
+        // user locked it. Blam ignores the BlueprintUpdateCamera FOV out-param, so write the
+        // camera manager's ViewTarget.POV.FOV (0x3B0) directly each frame.
         // Publish FOV to the lock-free atomics the GetFOVAngle detour reads.
-        let fov_active = st.freecam || st.fov_locked;
+        let fov_active = st.freecam || st.fov_locked || follow;
         FOV_ACTIVE.store(fov_active, Ordering::Relaxed);
         FORCED_FOV.store(st.fov.to_bits(), Ordering::Relaxed);
         if fov_active {
             *((self_ as usize + CAMMGR_POV_FOV) as *mut f32) = st.fov;
             *((self_ as usize + CAMMGR_POV_DESIRED_FOV) as *mut f32) = st.fov;
+        }
+
+        // Play-as-AI: lock the POV to the possessed unit. Takes priority over free-cam; if the
+        // target is gone, release and fall through to normal handling.
+        if follow {
+            // Orbit the biped from our look state - anchored on the biped ACTOR location (absolute),
+            // never read back from parms, so there is no camera feedback loop. (An earlier
+            // "trail the game POV" attempt read the camera location out of parms and ran away
+            // underground because the game's next POV depends on the one we wrote.)
+            let pov = crate::possess::target_pov();
+            // Throttled diagnostic: the game's own POV vs whether our override applied. This is
+            // the definitive signal for "why is it first-person" - if pov is None the game camera
+            // shows through; if Some, our override wins with the logged cam position.
+            let n = CAM_DIAG.fetch_add(1, Ordering::Relaxed);
+            if n % 90 == 0 {
+                let p = parms as *const u8;
+                let g = [
+                    *(p.add(BUC_LOCATION) as *const f64),
+                    *(p.add(BUC_LOCATION + 8) as *const f64),
+                    *(p.add(BUC_LOCATION + 16) as *const f64),
+                ];
+                match pov {
+                    Some((c, r)) => crate::rep!(
+                        "[camdiag] override ON game_loc=({:.0},{:.0},{:.0}) our_cam=({:.0},{:.0},{:.0}) rot=({:.0},{:.0},{:.0})",
+                        g[0], g[1], g[2], c[0], c[1], c[2], r[0], r[1], r[2]
+                    ),
+                    None => crate::rep!(
+                        "[camdiag] override OFF (target_pov=None -> GAME camera shows) game_loc=({:.0},{:.0},{:.0})",
+                        g[0], g[1], g[2]
+                    ),
+                }
+            }
+            if let Some((loc, rot)) = pov {
+                let p = parms as *mut u8;
+                *(p.add(BUC_LOCATION) as *mut f64) = loc[0];
+                *(p.add(BUC_LOCATION + 8) as *mut f64) = loc[1];
+                *(p.add(BUC_LOCATION + 16) as *mut f64) = loc[2];
+                *(p.add(BUC_ROTATION) as *mut f64) = rot[0];
+                *(p.add(BUC_ROTATION + 8) as *mut f64) = rot[1];
+                *(p.add(BUC_ROTATION + 16) as *mut f64) = rot[2];
+                *(p.add(BUC_FOV) as *mut f32) = st.fov;
+                *(p.add(BUC_RETURN) as *mut u8) = 1;
+                return;
+            }
+            crate::possess::on_target_lost();
         }
 
         if !st.freecam {

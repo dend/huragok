@@ -61,6 +61,9 @@ pub enum Cmd {
     Console(&'static str),
     FadeOut,
     FadeIn,
+    Possess,
+    Unpossess,
+    DumpRefs,
 }
 
 static QUEUE: Mutex<VecDeque<Cmd>> = Mutex::new(VecDeque::new());

@@ -30,7 +30,7 @@ fn player_unit() -> usize {
 /// True if `u` looks like a valid unit object body: the vitality-record array size reads as
 /// a small, non-zero multiple of the record stride. The read is guarded so a stale pointer
 /// can never crash us.
-fn valid_unit(u: usize) -> bool {
+pub fn valid_unit(u: usize) -> bool {
     if u == 0 {
         return false;
     }

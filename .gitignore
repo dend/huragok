@@ -22,3 +22,6 @@ target
 
 # personal RE notes and C++ reference - never commit
 reference/
+
+# research / reverse-engineering documentation - never commit
+docs/research/

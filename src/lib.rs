@@ -12,13 +12,17 @@ mod log;
 mod campaign;
 mod cmd;
 mod console;
+mod dump;
 mod hooks;
 mod input;
+mod look;
 mod mem;
 mod offsets;
 mod paths;
 mod pawn;
 mod perf;
+mod possess;
+mod script;
 mod seh;
 mod simtime;
 mod simunit;
@@ -76,6 +80,7 @@ unsafe extern "system" fn run(_param: *mut c_void) -> u32 {
 
     pawn::set_pc(pc);
     hooks::pc::install(pc); // command queue drains here, on the game thread
+    script::init(); // watch huragok_cmds.txt for externally-authored test commands
     rep!("[hook] core online.");
 
     // Feature loop: keep the camera hook installed, fly the free-cam, poll hotkeys.
@@ -85,8 +90,10 @@ unsafe extern "system" fn run(_param: *mut c_void) -> u32 {
             hooks::camera::install();
         }
         input::poll_freecam();
+        input::poll_possess_look();
         input::poll_hotkeys();
         paths::update();
+        script::poll();
         Sleep(15);
     }
 }

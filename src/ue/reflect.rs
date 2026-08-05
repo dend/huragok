@@ -154,6 +154,30 @@ pub fn property_offset(mut cls: *mut u8, name: &str) -> Option<i32> {
     None
 }
 
+/// List reflected properties (name, byte offset) of `cls` and its super chain. Same FField
+/// layout as `property_offset`. For diagnostics that need to enumerate, not look up by name.
+pub fn list_properties(mut cls: *mut u8) -> Vec<(String, i32)> {
+    let mut out = Vec::new();
+    unsafe {
+        for _ in 0..64 {
+            if cls.is_null() {
+                break;
+            }
+            let mut field = *((cls as usize + 0x50) as *const *mut u8);
+            let mut steps = 0;
+            while !field.is_null() && steps < 8192 {
+                let id = *((field as usize + 0x20) as *const u32);
+                let off = *((field as usize + 0x44) as *const i32);
+                out.push((super::fname::name_by_id(id), off));
+                field = *((field as usize + 0x18) as *const *mut u8);
+                steps += 1;
+            }
+            cls = super_of(cls);
+        }
+    }
+    out
+}
+
 /// Find a live (non-CDO, non-archetype) UClass whose name contains `want`.
 pub fn find_class(want: &str) -> *mut u8 {
     let n = num_elements();
